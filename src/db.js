@@ -3,6 +3,42 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 /**
+ * A volume that was created but never mounted fails silently: the directory is
+ * writable, the bot works, and every redeploy quietly wipes the log. Detect it
+ * at startup instead of discovering it weeks later.
+ *
+ * Only checked on Railway (where the mount is required) so local runs, which
+ * legitimately write to an ordinary directory, stay quiet.
+ */
+function warnIfNotOnAVolume(dir) {
+  const onRailway = Object.keys(process.env).some((key) => key.startsWith('RAILWAY_'));
+  if (!onRailway) return;
+
+  let mounts;
+  try {
+    mounts = fs.readFileSync('/proc/mounts', 'utf8');
+  } catch {
+    return; // Not a Linux container — nothing to check against.
+  }
+
+  // Fields are space-separated with spaces escaped as \040; the mount point is
+  // the second field.
+  const isMountPoint = mounts
+    .split('\n')
+    .some((line) => line.split(' ')[1]?.replace(/\\040/g, ' ') === dir);
+
+  if (!isMountPoint) {
+    console.warn(
+      `[db] WARNING: ${dir} is not a mounted volume. The database is on the container's ` +
+        'ephemeral disk and WILL BE ERASED on the next redeploy. Attach a Railway volume ' +
+        `with its mount path set to exactly ${dir}, then redeploy.`,
+    );
+  } else {
+    console.log(`[db] ${dir} is a mounted volume — data survives redeploys`);
+  }
+}
+
+/**
  * Opens (and migrates) the SQLite file. On Railway DB_PATH points inside the
  * mounted volume (/data), so the file survives redeploys; anywhere else on the
  * container filesystem it would be wiped on every deploy.
@@ -10,6 +46,7 @@ import Database from 'better-sqlite3';
 export function openDb(dbPath) {
   const dir = path.dirname(path.resolve(dbPath));
   fs.mkdirSync(dir, { recursive: true });
+  warnIfNotOnAVolume(dir);
 
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');

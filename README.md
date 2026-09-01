@@ -93,9 +93,20 @@ entry still sees the original description.
 
 4. **Set the environment variables** (*Variables* tab) — see the table below.
 
-5. **Redeploy.** On boot the logs should show `[server] listening on :…`,
-   `[webhook] registered https://…/<secret-path>`, and
-   `[summary] scheduled "0 21 * * *" in America/Chicago`.
+5. **Redeploy.** On boot the logs should show:
+
+   ```
+   [server] listening on :8080
+   [db] /data is a mounted volume — data survives redeploys
+   [db] using /data/foodlog.db
+   [webhook] registered https://…/<secret-path>
+   [summary] scheduled "0 21 * * *" in America/Chicago
+   ```
+
+   A volume that was created but never mounted is otherwise invisible — the
+   directory is writable and everything works until a redeploy erases it — so
+   startup checks whether `DB_PATH`'s directory is a real mount point and warns
+   loudly if it is not.
 
    If you set the variables before generating the domain, you will instead see
    `[webhook] no PUBLIC_URL or RAILWAY_PUBLIC_DOMAIN set`. Generate the domain
