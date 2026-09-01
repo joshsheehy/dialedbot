@@ -72,7 +72,7 @@ export function loadConfig() {
 
     timeZone: assertValidTimeZone(optional('TZ', 'America/Chicago')),
     dbPath: optional('DB_PATH', '/data/foodlog.db'),
-    port: Number(optional('PORT', '3000')),
+    port: Number(optional('PORT', '8080')),
     publicUrl: resolvePublicUrl(),
     summaryCron: '0 21 * * *', // 21:00 local time, every day
   };

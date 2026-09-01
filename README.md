@@ -81,10 +81,15 @@ entry still sees the original description.
    file lives at `/data/foodlog.db`; without the volume it sits on the
    container's ephemeral disk and every redeploy wipes your log.
 
-3. **Generate a public domain.** *Settings → Networking → Generate Domain*.
-   Railway then injects `RAILWAY_PUBLIC_DOMAIN`, which the bot reads on startup
-   to register its Telegram webhook. It also injects `PORT` — do not set that
-   yourself.
+3. **Generate a public domain.** *Settings → Networking → Generate Domain*, and
+   enter **8080** as the port. That is the port Railway forwards to inside the
+   container, not part of the public URL. Railway then injects
+   `RAILWAY_PUBLIC_DOMAIN`, which the bot reads on startup to register its
+   Telegram webhook.
+
+   Set `PORT=8080` in the variables too, so the port the app listens on and the
+   port the router forwards to cannot drift apart. The startup log line
+   `[server] listening on :8080` confirms they match.
 
 4. **Set the environment variables** (*Variables* tab) — see the table below.
 
@@ -108,7 +113,7 @@ Copy [`.env.example`](.env.example) for the full annotated list.
 | `WEBHOOK_SECRET` | yes | Long random string; generate one with the command below |
 | `TZ` | no — defaults `America/Chicago` | Any IANA name. **This is the one variable to change when you travel** — it moves both the daily-total boundaries and the 21:00 summary |
 | `DB_PATH` | no — defaults `/data/foodlog.db` | Must be inside the mounted volume |
-| `PORT` | no | Railway injects it |
+| `PORT` | no — defaults `8080` | Must match the port entered when generating the Railway domain |
 | `PUBLIC_URL` | no | Only for a custom domain or a local tunnel; otherwise derived from `RAILWAY_PUBLIC_DOMAIN` |
 
 Generate a webhook secret:
@@ -156,7 +161,7 @@ node --env-file=.env src/index.js
 
 Without `PUBLIC_URL` the service starts and serves HTTP but skips webhook
 registration, so it will not receive messages. To exercise it end to end, expose
-port 3000 with a tunnel (`cloudflared tunnel --url http://localhost:3000`) and
+port 8080 with a tunnel (`cloudflared tunnel --url http://localhost:8080`) and
 set `PUBLIC_URL` to the resulting HTTPS URL.
 
 ## Design notes
