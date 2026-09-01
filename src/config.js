@@ -33,6 +33,20 @@ function assertValidWebhookSecret(secret) {
   return secret;
 }
 
+// Number('8080 ') is 8080, but Number('八080') is NaN — and server.listen(NaN)
+// silently binds a random port, which looks healthy in the logs while the
+// Railway router gets a 502. Fail loudly instead.
+function assertValidPort(raw) {
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `PORT must be a whole number between 1 and 65535, got "${raw}". ` +
+        'On Railway set it to 8080 and enter the same port when generating the domain.',
+    );
+  }
+  return port;
+}
+
 function assertValidTimeZone(tz) {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
@@ -72,7 +86,7 @@ export function loadConfig() {
 
     timeZone: assertValidTimeZone(optional('TZ', 'America/Chicago')),
     dbPath: optional('DB_PATH', '/data/foodlog.db'),
-    port: Number(optional('PORT', '8080')),
+    port: assertValidPort(optional('PORT', '8080')),
     publicUrl: resolvePublicUrl(),
     summaryCron: '0 21 * * *', // 21:00 local time, every day
   };
