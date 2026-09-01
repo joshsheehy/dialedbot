@@ -53,11 +53,29 @@ export function createQueries(db) {
     WHERE chat_id = ? AND ts >= ? AND ts < ?
   `);
 
+  const listRange = db.prepare(`
+    SELECT * FROM food_log
+    WHERE chat_id = ? AND ts >= ? AND ts < ?
+    ORDER BY ts ASC, id ASC
+  `);
+
   const latest = db.prepare(`
     SELECT * FROM food_log WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT 1
   `);
 
+  const byId = db.prepare('SELECT * FROM food_log WHERE id = ? AND chat_id = ?');
+
   const deleteById = db.prepare('DELETE FROM food_log WHERE id = ?');
+
+  // Corrections rewrite the numbers in place. ts and source are deliberately
+  // left alone: an edit changes the estimate, not when the meal happened or
+  // how it was originally captured.
+  const updateById = db.prepare(`
+    UPDATE food_log
+    SET raw_input = @raw_input, items_json = @items_json, kcal = @kcal,
+        protein_g = @protein_g, carbs_g = @carbs_g, fat_g = @fat_g, estimated = @estimated
+    WHERE id = @id
+  `);
 
   return {
     /** Persist one analysed meal. Returns the new row id. */
@@ -88,6 +106,30 @@ export function createQueries(db) {
         fat_g: row.fat_g,
         estimatedCount: row.estimated_count,
       };
+    },
+
+    /** Today's rows, oldest first — used to show ids alongside /today. */
+    entriesForRange(chatId, start, end) {
+      return listRange.all(String(chatId), start, end);
+    },
+
+    /** One row by id, scoped to the chat. Returns undefined when absent. */
+    getEntry(chatId, id) {
+      return byId.get(id, String(chatId));
+    },
+
+    /** Replace an entry's numbers after a correction. */
+    updateEntry({ id, rawInput, result }) {
+      updateById.run({
+        id,
+        raw_input: rawInput ?? null,
+        items_json: JSON.stringify(result.items ?? []),
+        kcal: result.kcal,
+        protein_g: result.protein_g,
+        carbs_g: result.carbs_g,
+        fat_g: result.fat_g,
+        estimated: result.estimated ? 1 : 0,
+      });
     },
 
     /** Delete the most recent entry. Returns the deleted row, or null. */

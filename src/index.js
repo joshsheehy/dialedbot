@@ -12,7 +12,7 @@ async function main() {
   const db = openDb(config.dbPath);
   const queries = createQueries(db);
   const llm = createLlm(config.anthropicApiKey);
-  const analyzer = createAnalyzer({ llm, config });
+  const analyzer = createAnalyzer({ llm });
   const bot = createBot({ config, queries, analyzer });
 
   // Webhook mode: no long polling, so the process sits idle between messages.

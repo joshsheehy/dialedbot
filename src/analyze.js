@@ -1,57 +1,51 @@
-import { lookupNutrition } from './nutritionix.js';
 import { downscaleToJpeg } from './image.js';
 
 /**
- * ROUTING — this is where the money is spent (or not).
+ * ROUTING — every logged meal costs exactly ONE claude-haiku-4-5 call.
  *
- *   TEXT / RESTAURANT   Nutritionix (free) -> on a miss, ONE claude-haiku-4-5 call
- *   PHOTO               downscale -> ONE claude-haiku-4-5 call (always paid)
+ *   TEXT        -> one call
+ *   RESTAURANT  -> one call (same prompt; the model reaches for the chain's
+ *                  published values when it knows the item, and estimates from
+ *                  the description when it does not)
+ *   PHOTO       -> downscale to 768px, then one vision call
+ *   EDIT        -> one call, re-estimating an existing row from a correction
  *
- * There is no path in this file that makes more than one paid call, and no
- * path that calls the model when Nutritionix already answered.
+ * No path here makes more than one call. /today, /undo and the daily summary
+ * never reach this module at all.
  */
 
 /**
  * Free, local classifier for the `source` column — never costs a call.
- * A branded Nutritionix hit is definitive; otherwise fall back to the phrasing
- * ("... from Chipotle", "... at Panera").
+ * Distinguishes "200g chicken breast" from "chicken bowl from Chipotle" on
+ * phrasing alone.
  */
-function classifySource(text, branded) {
-  if (branded) return 'restaurant';
+function classifySource(text) {
   return /\b(?:from|at)\s+[A-Za-z]/i.test(text ?? '') ? 'restaurant' : 'text';
 }
 
-export function createAnalyzer({ llm, config }) {
-  const nutritionixCreds = {
-    appId: config.nutritionixAppId,
-    apiKey: config.nutritionixApiKey,
-    timeZone: config.timeZone,
-  };
-
+export function createAnalyzer({ llm }) {
   return {
     /** Modes 1 and 2 — identical routing, they only differ in the stored `source`. */
     async analyzeText(text) {
-      // STEP 1 (FREE): Nutritionix natural-language nutrients. Covers generic
-      // foods and chain-restaurant items alike.
-      const matched = await lookupNutrition(text, nutritionixCreds);
-      if (matched) {
-        const { branded, ...result } = matched;
-        return { ...result, source: classifySource(text, branded) };
-      }
-
-      // STEP 2 (PAID — exactly one call): only reached when Nutritionix had
-      // nothing usable, e.g. an independent restaurant with no published data.
-      const estimated = await llm.estimateFromText(text);
-      return { ...estimated, source: classifySource(text, false) };
+      const result = await llm.estimateFromText(text); // PAID — exactly one call
+      return { ...result, source: classifySource(text) };
     },
 
-    /** Mode 3 — the one path that always spends a paid call. */
+    /** Mode 3. */
     async analyzePhoto(imageBuffer, caption) {
       // Shrink first so we pay for ~768px of vision tokens, not the original.
       const jpeg = await downscaleToJpeg(imageBuffer);
+      const result = await llm.estimateFromImage(jpeg, caption); // PAID — exactly one call
+      return { ...result, source: 'photo' };
+    },
+
+    /**
+     * /edit. The row keeps its original `source` and timestamp — a correction
+     * changes the numbers, not when the meal happened or how it was captured.
+     */
+    async analyzeCorrection({ originalInput, previousItems, correction }) {
       // PAID — exactly one call.
-      const estimated = await llm.estimateFromImage(jpeg, caption);
-      return { ...estimated, source: 'photo' };
+      return llm.reestimateWithCorrection({ originalInput, previousItems, correction });
     },
   };
 }

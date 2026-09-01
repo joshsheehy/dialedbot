@@ -43,8 +43,6 @@ export function loadConfig() {
   return {
     telegramBotToken: required('TELEGRAM_BOT_TOKEN'),
     anthropicApiKey: required('ANTHROPIC_API_KEY'),
-    nutritionixAppId: required('NUTRITIONIX_APP_ID'),
-    nutritionixApiKey: required('NUTRITIONIX_API_KEY'),
     authorizedChatId: required('AUTHORIZED_CHAT_ID'),
     webhookSecret,
 

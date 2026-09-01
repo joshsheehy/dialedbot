@@ -2,41 +2,72 @@
 
 A single-user calorie and macro tracking Telegram bot. One always-on Node.js
 service on Railway, one SQLite file on a mounted volume. No second database, no
-second host, no external services beyond Telegram, Nutritionix, and Anthropic.
+second host, no external services beyond Telegram and Anthropic.
 
 Send it what you ate; it logs the meal and replies with the macros plus your
 running total for the day. At 21:00 in your timezone it sends an unprompted
 daily summary.
 
-## How it minimizes paid API calls
+## API cost
+
+All three input modes route through `claude-haiku-4-5`. Every logged meal costs
+exactly one call; nothing else costs anything.
 
 | Input | Route | Paid calls |
 |---|---|---|
-| Text — *"200g chicken breast and a cup of white rice"* | Nutritionix natural-language endpoint (free) | **0** |
-| Restaurant — *"chicken bowl from Chipotle with rice, black beans, guac"* | Same endpoint — its branded database covers chains and returns published numbers | **0** |
-| Either of the above, no match | Falls back to one `claude-haiku-4-5` call, flagged as an estimate | **1** |
+| Text — *"200g chicken breast and a cup of white rice"* | One `claude-haiku-4-5` call | **1** |
+| Restaurant — *"chicken bowl from Chipotle with rice, black beans, guac"* | Same call. The prompt tells the model to use the chain's published values where it knows the item, and to estimate from the dish description otherwise | **1** |
 | Photo | Downscaled to 768px JPEG, then one `claude-haiku-4-5` call | **1** |
+| `/edit` | One call, re-estimating an existing entry | **1** |
 | `/today`, `/undo`, the 21:00 summary | SQLite only | **0** |
 
-Nutritionix is always tried first for text, and the model is only reached on a
-miss. The routing lives in [`src/analyze.js`](src/analyze.js), commented at each
-decision point.
+The routing lives in [`src/analyze.js`](src/analyze.js), commented at each
+decision point. No path makes more than one call.
 
-Photos are the one unavoidable paid path. Two things keep them cheap: Telegram
-already sends several pre-scaled variants, so the bot downloads the smallest one
-that is still at least 768px rather than the full-size original; then `sharp`
-resizes it to 768px on the longest side and re-encodes as JPEG. That is roughly
-590 image tokens instead of ~1600 for a full 1280px photo.
+Photos are the most expensive path per call, so two things keep them cheap:
+Telegram already sends several pre-scaled variants, so the bot downloads the
+smallest one that is still at least 768px rather than the full-size original;
+then `sharp` resizes it to 768px on the longest side and re-encodes as JPEG.
+That is roughly 590 image tokens instead of ~1600 for a full 1280px photo.
+
+**Every figure is an estimate.** There is no lookup against a published nutrition
+database, so each reply shows the assumptions the model made — portion sizes,
+cooking fat, which options it assumed on a restaurant order — and `/edit` lets
+you correct any of them.
 
 ## Commands
 
 | Command | Effect |
 |---|---|
-| *(any text)* | Log a meal, reply with items, macros, and today's total |
+| *(any text)* | Log a meal, reply with items, macros, assumptions, and today's total |
 | *(any photo)* | Same, from the picture — add a caption for extra detail |
-| `/today` | Today's running total on demand |
+| `/today` | Today's running total, plus each entry's id |
+| `/edit <id> <correction>` | Re-estimate an entry and update it in place |
 | `/undo` | Delete the most recent entry |
 | `/help` | Usage reminder |
+
+Every logging reply ends with the entry's id, so a bad estimate can be corrected
+straight away:
+
+```
+• Chicken breast — 170g: 281 kcal · 53P / 0C / 6F
+• White rice — 158g: 205 kcal · 4P / 45C / 0F
+
+Meal: 486 kcal · 57P / 45C / 6F
+Assumed: ~6oz cooked chicken breast, grilled dry; 1 cup cooked white rice
+Today: 486 kcal · 57P / 45C / 6F · 1 meal
+
+#42 · wrong portion? /edit 42 <correction>
+```
+
+```
+/edit 42 the chicken was 8oz and cooked in a tablespoon of olive oil
+```
+
+`/edit` keeps the entry's original timestamp and source — a correction changes
+the numbers, not when the meal happened — so it cannot move a meal across a day
+boundary. Corrections accumulate as context, so a second `/edit` on the same
+entry still sees the original description.
 
 ## Railway setup
 
@@ -73,8 +104,6 @@ Copy [`.env.example`](.env.example) for the full annotated list.
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | From [@BotFather](https://t.me/BotFather) — send `/newbot` |
 | `ANTHROPIC_API_KEY` | yes | [console.anthropic.com](https://console.anthropic.com) |
-| `NUTRITIONIX_APP_ID` | yes | Free key at [developer.nutritionix.com](https://developer.nutritionix.com/) |
-| `NUTRITIONIX_API_KEY` | yes | Same signup |
 | `AUTHORIZED_CHAT_ID` | yes | Your chat ID — see below |
 | `WEBHOOK_SECRET` | yes | Long random string; generate one with the command below |
 | `TZ` | no — defaults `America/Chicago` | Any IANA name. **This is the one variable to change when you travel** — it moves both the daily-total boundaries and the 21:00 summary |
@@ -160,6 +189,10 @@ trusting a separately-generated total. If the endpoint ever rejects
 `output_config`, the bot retries once without it and remembers not to send it
 again for the life of the process (a rejected request is not billed).
 
+**A failed `/edit` leaves the row alone.** The row is only rewritten after the
+model returns a parseable result, so a timeout or a bad response cannot blank an
+entry — the reply says the entry is unchanged.
+
 **Failures reply, they do not crash.** Every handler is wrapped, `bot.catch`
 backstops grammY, and process-level handlers log without exiting. A message that
 cannot be analysed gets a friendly error and writes no row.
@@ -173,7 +206,6 @@ src/
   server.js       minimal HTTP server: health check + verified webhook endpoint
   bot.js          grammY handlers, chat-ID gate, commands
   analyze.js      routing — where the one paid call happens in each path
-  nutritionix.js  free natural-language nutrients lookup
   llm.js          claude-haiku-4-5 client, strict JSON shape, defensive parsing
   image.js        Telegram size selection + 768px JPEG downscale
   db.js           SQLite schema and queries
@@ -199,3 +231,7 @@ CREATE TABLE food_log (
   estimated  INTEGER NOT NULL DEFAULT 0
 );
 ```
+
+`estimated` is always `1` now that every figure comes from the model. The column
+is kept so the schema is unchanged and so the flag stays available if a lookup
+source is ever added back.

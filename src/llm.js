@@ -1,10 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 /**
- * The ONLY paid API surface in this bot. Reached from exactly two places:
- *   1. a Nutritionix miss on a text/restaurant message (fallback estimate)
- *   2. every photo message (there is no free vision source)
- * Each entry point makes at most one request.
+ * The only external API in this bot. Every logged meal costs exactly one
+ * claude-haiku-4-5 call — text, restaurant, and photo alike — and /edit costs
+ * one more. The DB-only paths (/today, /undo, the 21:00 summary) cost nothing.
  */
 
 export const MODEL = 'claude-haiku-4-5';
@@ -12,14 +11,26 @@ const MAX_TOKENS = 2048;
 
 const SYSTEM_PROMPT = [
   'You are a nutrition estimator for a personal food log.',
-  'Break the meal into individual food items and estimate calories and macros for each.',
-  'Use realistic restaurant/home portion sizes and account for cooking fats and sauces.',
+  'Break the meal into individual food items and give calories and macros for each.',
+  '',
+  'If the meal names a restaurant, chain, or packaged brand, use what you know about that',
+  "item's published nutrition and say so in assumptions. If you do not know that specific",
+  'item — an independent restaurant, or a dish you cannot place — estimate it from the dish',
+  'description and typical preparation, and say that instead.',
+  '',
+  'Use realistic portion sizes and account for cooking fats, sauces, and dressings.',
+  '',
   'Respond with ONLY a single JSON object matching this shape, and nothing else:',
   '{"items":[{"name":string,"grams":number|null,"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number}],',
-  '"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,"estimated":boolean,"assumptions":string|null}',
+  '"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,"estimated":boolean,"assumptions":string}',
+  '',
   'The top-level kcal/protein_g/carbs_g/fat_g are the sums across items.',
-  'Set "estimated" to true. Put the portion and preparation guesses you made in "assumptions"',
-  '(e.g. "assumed ~6oz chicken, cooked in oil") so the user can correct you. Keep it under 200 characters.',
+  'Always set "estimated" to true — every number you produce is an estimate.',
+  'Always populate "assumptions" with the portion and preparation guesses you made,',
+  'e.g. "assumed ~6oz cooked chicken breast, 1 tbsp oil" or "Chipotle published values, assumed',
+  'white rice and no cheese". Be specific about quantities so the user can correct you.',
+  'Keep it under 200 characters. Never leave it empty or null.',
+  '',
   'No prose, no markdown, no code fences.',
 ].join(' ');
 
@@ -50,14 +61,16 @@ const OUTPUT_SCHEMA = {
     carbs_g: { type: 'number' },
     fat_g: { type: 'number' },
     estimated: { type: 'boolean' },
+    // Kept nullable so a missing value degrades gracefully rather than
+    // hard-failing the request; the prompt asks for it on every response.
     assumptions: { type: ['string', 'null'] },
   },
   required: ['items', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'estimated', 'assumptions'],
   additionalProperties: false,
 };
 
-// Set once if the account/model rejects output_config, so we never waste a
-// second paid call on the same rejection twice.
+// Set once if the account/model rejects output_config, so we never re-probe.
+// A rejected request is not billed, so this costs nothing when it happens.
 let structuredOutputSupported = true;
 
 function num(value, fallback = 0) {
@@ -77,7 +90,7 @@ function extractJsonObject(text) {
 }
 
 /** Coerce whatever came back into the strict shape, recomputing totals from items. */
-export function normalizeResult(parsed, { forceEstimated = true } = {}) {
+export function normalizeResult(parsed) {
   const rawItems = Array.isArray(parsed?.items) ? parsed.items : [];
 
   const items = rawItems
@@ -121,9 +134,21 @@ export function normalizeResult(parsed, { forceEstimated = true } = {}) {
     protein_g: num(totals.protein_g),
     carbs_g: num(totals.carbs_g),
     fat_g: num(totals.fat_g),
-    estimated: forceEstimated ? true : Boolean(parsed?.estimated),
+    // Every number now comes from the model, so every row is an estimate.
+    estimated: true,
     assumptions,
   };
+}
+
+/** Compact rendering of a previously logged meal, used as context on /edit. */
+function describeItems(items) {
+  if (!Array.isArray(items) || items.length === 0) return '(no items)';
+  return items
+    .map((item) => {
+      const grams = item.grams ? `, ${item.grams}g` : '';
+      return `${item.name}${grams}: ${Math.round(item.kcal)} kcal, ${Math.round(item.protein_g)}P/${Math.round(item.carbs_g)}C/${Math.round(item.fat_g)}F`;
+    })
+    .join('; ');
 }
 
 export function createLlm(apiKey) {
@@ -171,19 +196,23 @@ export function createLlm(apiKey) {
   }
 
   return {
-    /** Fallback for a text/restaurant description Nutritionix could not match. */
+    /**
+     * Modes 1 and 2. One prompt serves both: the system prompt tells the model
+     * to reach for a chain's published values when it recognises the item and
+     * to estimate from the description otherwise.
+     */
     estimateFromText(description) {
       return request([
         {
           type: 'text',
-          text: `Estimate the nutrition for this meal description:\n\n${description}`,
+          text: `Estimate the nutrition for this meal:\n\n${description}`,
         },
       ]);
     },
 
-    /** Photo path: a pre-downscaled JPEG plus the optional Telegram caption. */
+    /** Mode 3: a pre-downscaled JPEG plus the optional Telegram caption. */
     estimateFromImage(jpegBuffer, caption) {
-      const blocks = [
+      return request([
         {
           type: 'image',
           source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuffer.toString('base64') },
@@ -194,8 +223,30 @@ export function createLlm(apiKey) {
             ? `Identify the foods in this photo, estimate the portions, and return the macros. The user added: "${caption}"`
             : 'Identify the foods in this photo, estimate the portions, and return the macros.',
         },
-      ];
-      return request(blocks);
+      ]);
+    },
+
+    /**
+     * /edit. The original photo is not retained, so the previously logged items
+     * stand in as context — that lets a correction like "the chicken was 8oz"
+     * work against a photo entry as well as a typed one.
+     */
+    reestimateWithCorrection({ originalInput, previousItems, correction }) {
+      return request([
+        {
+          type: 'text',
+          text: [
+            'A previously logged meal needs correcting. Re-estimate it.',
+            '',
+            `Originally logged from: ${originalInput || '(a photo)'}`,
+            `Previous estimate: ${describeItems(previousItems)}`,
+            '',
+            `The user's correction: ${correction}`,
+            '',
+            'Apply the correction and return the full corrected meal, not just the changed part.',
+          ].join('\n'),
+        },
+      ]);
     },
   };
 }

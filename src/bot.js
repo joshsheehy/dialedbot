@@ -3,13 +3,18 @@ import { pickPhotoSize } from './image.js';
 import { localDayRange, formatLocalDate, formatLocalTime } from './time.js';
 import {
   formatMealReply,
+  formatEditReply,
   formatTodayReply,
   formatUndoReply,
+  describeRow,
   HELP_TEXT,
 } from './format.js';
 
 const FRIENDLY_ERROR =
   "Sorry — I couldn't work that one out. Try rephrasing it, or send it again in a moment.";
+
+// Keeps raw_input bounded when an entry is corrected repeatedly.
+const MAX_RAW_INPUT = 2000;
 
 async function downloadTelegramFile(ctx, fileId, token) {
   const file = await ctx.api.getFile(fileId);
@@ -24,9 +29,12 @@ async function downloadTelegramFile(ctx, fileId, token) {
 export function createBot({ config, queries, analyzer }) {
   const bot = new Bot(config.telegramBotToken);
 
-  const todayTotals = () => {
+  const today = () => {
     const { start, end } = localDayRange(config.timeZone);
-    return queries.totalsForRange(config.authorizedChatId, start, end);
+    return {
+      totals: queries.totalsForRange(config.authorizedChatId, start, end),
+      entries: queries.entriesForRange(config.authorizedChatId, start, end),
+    };
   };
 
   // The bot token is publicly reachable, so gate everything on the one chat ID
@@ -40,7 +48,8 @@ export function createBot({ config, queries, analyzer }) {
 
   // DB only — no API call.
   bot.command('today', async (ctx) => {
-    await ctx.reply(formatTodayReply(todayTotals(), formatLocalDate(config.timeZone)));
+    const { totals, entries } = today();
+    await ctx.reply(formatTodayReply(totals, entries, formatLocalDate(config.timeZone)));
   });
 
   // DB only — no API call.
@@ -51,23 +60,70 @@ export function createBot({ config, queries, analyzer }) {
       return;
     }
     await ctx.reply(
-      formatUndoReply(row, formatLocalTime(config.timeZone, new Date(row.ts)), todayTotals()),
+      formatUndoReply(row, formatLocalTime(config.timeZone, new Date(row.ts)), today().totals),
     );
+  });
+
+  // /edit <id> <correction> — costs ONE paid call, like logging a meal.
+  bot.command('edit', async (ctx) => {
+    const argument = (ctx.match ?? '').trim();
+    const match = argument.match(/^(\d+)\s+(.+)$/s);
+    if (!match) {
+      await ctx.reply(
+        'Usage: /edit <id> <correction>\nFor example: /edit 42 the chicken was 8oz, no oil\nRun /today to see entry ids.',
+      );
+      return;
+    }
+
+    const id = Number(match[1]);
+    const correction = match[2].trim();
+
+    const row = queries.getEntry(config.authorizedChatId, id);
+    if (!row) {
+      await ctx.reply(`No entry #${id}. Run /today to see current ids.`);
+      return;
+    }
+
+    await ctx.replyWithChatAction('typing').catch(() => {});
+    try {
+      let previousItems = [];
+      try {
+        previousItems = JSON.parse(row.items_json);
+      } catch {
+        previousItems = [];
+      }
+
+      const result = await analyzer.analyzeCorrection({
+        originalInput: row.raw_input,
+        previousItems,
+        correction,
+      });
+
+      // Keep the correction history so a second /edit on the same row still has
+      // the full picture to work from.
+      const rawInput = `${row.raw_input ?? ''}\n↳ ${correction}`.trim().slice(-MAX_RAW_INPUT);
+      queries.updateEntry({ id, rawInput, result });
+
+      await ctx.reply(formatEditReply({ id, result, totals: today().totals }));
+    } catch (error) {
+      console.error('[bot] edit failed:', error);
+      await ctx.reply(`${FRIENDLY_ERROR}\n#${id} is unchanged: ${describeRow(row)}`);
+    }
   });
 
   /** Persist an analysed meal and reply with it plus the running daily total. */
   async function logAndReply(ctx, result, rawInput) {
-    queries.addEntry({
+    const id = queries.addEntry({
       chatId: config.authorizedChatId,
       ts: Date.now(),
       source: result.source,
       rawInput,
       result,
     });
-    await ctx.reply(formatMealReply({ result, totals: todayTotals() }));
+    await ctx.reply(formatMealReply({ id, result, totals: today().totals }));
   }
 
-  // Modes 1 and 2: free Nutritionix lookup first, one paid model call only on a miss.
+  // Modes 1 and 2: one paid claude-haiku-4-5 call.
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     if (!text || text.startsWith('/')) return;
@@ -82,7 +138,7 @@ export function createBot({ config, queries, analyzer }) {
     }
   });
 
-  // Mode 3: always one paid model call, on a downscaled image.
+  // Mode 3: downscale, then one paid claude-haiku-4-5 vision call.
   bot.on('message:photo', async (ctx) => {
     await ctx.replyWithChatAction('typing').catch(() => {});
     try {
@@ -99,7 +155,7 @@ export function createBot({ config, queries, analyzer }) {
 
   // Anything else (voice, video, stickers, documents) — no API call, just a nudge.
   bot.on('message', async (ctx) => {
-    await ctx.reply("I can read text descriptions and photos of meals. Send me one of those.");
+    await ctx.reply('I can read text descriptions and photos of meals. Send me one of those.');
   });
 
   // Last line of defence: a handler throwing must never take the process down.
