@@ -117,6 +117,23 @@ export function formatEntryReply(row, timeLabel) {
   return lines.join('\n');
 }
 
+/** /recent — the meals you log most often. DB only. */
+export function formatRecentReply(repeats) {
+  if (repeats.length === 0) {
+    return 'Nothing logged yet. Once you have a few meals, this lists the ones you repeat so you can re-log them in one tap.';
+  }
+  return [
+    'Your usual meals — tap one to log it again.',
+    'Re-logging copies the saved numbers, so it costs nothing and is instant.',
+  ].join('\n');
+}
+
+/** Button label for one repeatable meal. */
+export function repeatLabel({ row, count }) {
+  const times = count > 1 ? ` ×${count}` : '';
+  return `🔁 ${describeRow(row)}${times}`.slice(0, 60);
+}
+
 /** 21:00 cron message — DB only. */
 export function formatDailySummary(totals, dateLabel) {
   if (totals.meals === 0) return `Daily summary — ${dateLabel}\nNo meals logged today.`;
@@ -150,9 +167,10 @@ export const HELP_TEXT = [
   'Restaurant — "chicken bowl from Chipotle with rice, black beans, guac"',
   'Photo — send a picture of the meal (add a caption for extra detail)',
   '',
-  'Every reply has Fix and Delete buttons — tap them, no typing needed.',
+  'Every reply has Fix, Again and Delete buttons — tap them, no typing needed.',
   '',
-  '/today — running total; tap any entry to fix or delete it',
+  '/recent — your usual meals; tap one to re-log it free and instantly',
+  '/today — running total; tap any entry to fix, repeat or delete it',
   '/undo — delete the most recent entry',
   '/delete <id> — delete a specific entry',
   '/edit <id> <correction> — re-estimate an entry',

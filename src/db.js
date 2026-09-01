@@ -102,6 +102,10 @@ export function createQueries(db) {
 
   const byId = db.prepare('SELECT * FROM food_log WHERE id = ? AND chat_id = ?');
 
+  const recent = db.prepare(`
+    SELECT * FROM food_log WHERE chat_id = ? ORDER BY ts DESC, id DESC LIMIT ?
+  `);
+
   const deleteById = db.prepare('DELETE FROM food_log WHERE id = ?');
 
   // Corrections rewrite the numbers in place. ts and source are deliberately
@@ -148,6 +152,11 @@ export function createQueries(db) {
     /** Today's rows, oldest first — used to show ids alongside /today. */
     entriesForRange(chatId, start, end) {
       return listRange.all(String(chatId), start, end);
+    },
+
+    /** Newest-first window over the log, for repeat detection. */
+    recentRows(chatId, limit) {
+      return recent.all(String(chatId), limit);
     },
 
     /** One row by id, scoped to the chat. Returns undefined when absent. */

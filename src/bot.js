@@ -7,9 +7,12 @@ import {
   formatTodayReply,
   formatEntryReply,
   formatUndoReply,
+  formatRecentReply,
+  repeatLabel,
   describeRow,
   HELP_TEXT,
 } from './format.js';
+import { groupRepeats, LOOKBACK_ROWS } from './repeats.js';
 
 const FRIENDLY_ERROR =
   "Sorry — I couldn't work that one out. Try rephrasing it, or send it again in a moment.";
@@ -22,9 +25,16 @@ const MAX_RAW_INPUT = 2000;
 const FIX_PROMPT = (id, label) => `Correcting #${id} — ${label}\n\nWhat should I change?`;
 const FIX_PROMPT_RE = /^Correcting #(\d+) —/;
 
-/** Fix / Delete buttons attached to a single entry. */
+/**
+ * Buttons attached to a single entry. Delete sits on its own row so it is not
+ * a neighbour of the two buttons you actually press often.
+ */
 const entryKeyboard = (id) =>
-  new InlineKeyboard().text('✏️ Fix', `fix:${id}`).text('🗑 Delete', `del:${id}`);
+  new InlineKeyboard()
+    .text('✏️ Fix', `fix:${id}`)
+    .text('🔁 Again', `again:${id}`)
+    .row()
+    .text('🗑 Delete', `del:${id}`);
 
 async function downloadTelegramFile(ctx, fileId, token) {
   const file = await ctx.api.getFile(fileId);
@@ -84,6 +94,23 @@ export function createBot({ config, queries, analyzer }) {
     });
     await ctx.reply(formatTodayReply(totals, entries, formatLocalDate(config.timeZone)), {
       reply_markup: entries.length ? keyboard : undefined,
+    });
+  });
+
+  // Re-logging copies a stored row, so this whole path costs NOTHING — no
+  // Nutritionix, no model call. Most meals repeat, so this is the cheapest and
+  // fastest way to log.
+  bot.command('recent', async (ctx) => {
+    const repeats = groupRepeats(
+      queries.recentRows(config.authorizedChatId, LOOKBACK_ROWS),
+    );
+    const keyboard = new InlineKeyboard();
+    repeats.forEach((entry, index) => {
+      if (index > 0) keyboard.row();
+      keyboard.text(repeatLabel(entry), `again:${entry.row.id}`);
+    });
+    await ctx.reply(formatRecentReply(repeats), {
+      reply_markup: repeats.length ? keyboard : undefined,
     });
   });
 
@@ -196,6 +223,51 @@ export function createBot({ config, queries, analyzer }) {
       // typed is treated as a correction rather than a new meal.
       await ctx.reply(FIX_PROMPT(id, describeRow(row)), {
         reply_markup: { force_reply: true, input_field_placeholder: 'e.g. the chicken was 8oz' },
+      });
+      return;
+    }
+
+    if (action === 'again') {
+      const row = queries.getEntry(config.authorizedChatId, id);
+      if (!row) {
+        await ctx.answerCallbackQuery({ text: `#${id} is gone` });
+        return;
+      }
+
+      let items = [];
+      try {
+        const parsed = JSON.parse(row.items_json);
+        items = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        items = [];
+      }
+
+      // Copy the saved numbers verbatim at the current time. Source and
+      // raw_input carry over — it is the same food, logged again — while ts is
+      // now, so it lands on today.
+      const result = {
+        items,
+        kcal: row.kcal,
+        protein_g: row.protein_g,
+        carbs_g: row.carbs_g,
+        fat_g: row.fat_g,
+        estimated: Boolean(row.estimated),
+        // The original run's assumptions are not persisted, so state plainly
+        // what this entry is rather than falling back to generic wording.
+        assumptions: `copied from #${id}, numbers unchanged`,
+        source: row.source,
+      };
+      const newId = queries.addEntry({
+        chatId: config.authorizedChatId,
+        ts: Date.now(),
+        source: row.source,
+        rawInput: row.raw_input,
+        result,
+      });
+
+      await ctx.answerCallbackQuery({ text: `Logged again as #${newId}` });
+      await ctx.reply(formatMealReply({ id: newId, result, totals: today().totals }), {
+        reply_markup: entryKeyboard(newId),
       });
       return;
     }

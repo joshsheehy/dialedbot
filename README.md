@@ -19,7 +19,8 @@ exactly one call; nothing else costs anything.
 | Restaurant — *"chicken bowl from Chipotle with rice, black beans, guac"* | Same call. The prompt tells the model to use the chain's published values where it knows the item, and to estimate from the dish description otherwise | **1** |
 | Photo | Downscaled to 768px JPEG, then one `claude-haiku-4-5` call | **1** |
 | `/edit` | One call, re-estimating an existing entry | **1** |
-| `/today`, `/undo`, the 21:00 summary | SQLite only | **0** |
+| **🔁 Again / `/recent`** | Copies a stored entry's numbers | **0** |
+| `/today`, `/undo`, `/delete`, the 21:00 summary | SQLite only | **0** |
 
 The routing lives in [`src/analyze.js`](src/analyze.js), commented at each
 decision point. No path makes more than one call.
@@ -41,6 +42,7 @@ you correct any of them.
 |---|---|
 | *(any text)* | Log a meal, reply with items, macros, assumptions, and today's total |
 | *(any photo)* | Same, from the picture — add a caption for extra detail |
+| `/recent` | Your usual meals; tap one to re-log it instantly, free |
 | `/today` | Today's running total; every entry is a tappable button |
 | `/undo` | Delete the most recent entry |
 | `/delete <id>` | Delete a specific entry |
@@ -48,12 +50,20 @@ you correct any of them.
 | `/help` | Usage reminder |
 
 Typing ids is the fallback, not the main path. Every logging reply carries
-**✏️ Fix** and **🗑 Delete** buttons:
+**✏️ Fix**, **🔁 Again** and **🗑 Delete** buttons:
 
 - **Delete** removes that entry immediately and rewrites the message to say so,
   so scrollback stays accurate. It reaches any entry, not just the most recent.
 - **Fix** sends a reply prompt naming the entry. Whatever you type next is
   applied as a correction to it rather than logged as a new meal.
+- **Again** re-logs the same meal at the current time by copying the stored
+  numbers. **No API call at all** — it is the cheapest and fastest way to log,
+  and most meals repeat.
+
+`/recent` collapses the log into distinct meals, most-repeated first, each a
+one-tap button. Meals are grouped by their item names, so a portion correction
+does not split a dish into two entries; re-logging always copies the most recent
+version's numbers.
 
 `/today` lists every entry of the day as a button; tapping one opens it with the
 same two buttons. Button taps cost nothing — only the correction itself is a
@@ -259,6 +269,7 @@ src/
   server.js       minimal HTTP server: health check + verified webhook endpoint
   bot.js          grammY handlers, chat-ID gate, commands
   analyze.js      routing — where the one paid call happens in each path
+  repeats.js      grouping the log into distinct meals for one-tap re-logging
   llm.js          claude-haiku-4-5 client, strict JSON shape, defensive parsing
   image.js        Telegram size selection + 768px JPEG downscale
   db.js           SQLite schema and queries
