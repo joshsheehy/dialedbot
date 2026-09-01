@@ -105,12 +105,17 @@ so the bot publishes the day's numbers and an iOS Shortcut does the writing.
 WHOOP's Journal reads macros from Apple Health, so anything written there flows
 on to WHOOP.
 
-Send `/export` to the bot. It replies with a URL and a bearer token:
+Send `/export` to the bot. It replies with a single tappable link:
 
 ```
-GET https://<your-domain>/<export-path>?date=today
-Authorization: Bearer <token>
+https://<your-domain>/<export-path>?date=today&token=<token>
 ```
+
+Tapping it in Telegram shows the day's numbers, which is the quickest way to
+confirm the endpoint works. An `Authorization: Bearer <token>` header is also
+accepted for callers that prefer it. The token is in the query string on
+purpose: a plain URL is tappable and needs no header configuration in
+Shortcuts, and this endpoint only reads a personal food log.
 
 ```json
 {
@@ -124,7 +129,7 @@ Authorization: Bearer <token>
 Daily totals for a simple four-sample Shortcut; `entries[]` for one that wants
 real per-meal timestamps. `date=` accepts `today`, `yesterday`, or `YYYY-MM-DD`.
 
-Building the Shortcut: **Get Contents of URL** (method GET, the header above) →
+Building the Shortcut: **Get Contents of URL** (the link as-is, no headers) →
 **Get Dictionary Value** for `kcal` → **Log Health Sample** with type *Dietary
 Energy* → repeat for `protein_g`, `carbs_g`, `fat_g` against *Protein*,
 *Carbohydrates* and *Total Fat*. A Personal Automation set to just after 21:00

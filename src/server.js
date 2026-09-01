@@ -45,14 +45,29 @@ function readBody(req) {
  * Read-only, DB only, no API call.
  */
 function handleExport({ config, queries, url, req, res }) {
-  const provided = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  if (!timingSafeEqual(provided, config.exportToken)) {
+  const params = new URL(url, 'http://localhost').searchParams;
+
+  // Two ways to present the token. The header is tidier, but a plain URL is
+  // tappable in Telegram and needs no header configuration in Shortcuts, which
+  // matters more here — this endpoint only reads a personal food log.
+  const fromHeader = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const fromQuery = params.get('token') ?? '';
+  const authorized =
+    timingSafeEqual(fromHeader, config.exportToken) ||
+    timingSafeEqual(fromQuery, config.exportToken);
+
+  if (!authorized) {
     res.writeHead(401, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: 'unauthorized' }));
+    res.end(
+      JSON.stringify({
+        error: 'unauthorized',
+        hint: 'Add ?token=... to the URL, or send an Authorization: Bearer header. Run /export in the bot to get the full link.',
+      }),
+    );
     return;
   }
 
-  const selector = new URL(url, 'http://localhost').searchParams.get('date') ?? 'today';
+  const selector = params.get('date') ?? 'today';
   const ymd = resolveDaySelector(config.timeZone, selector);
   if (!ymd) {
     res.writeHead(400, { 'content-type': 'application/json' });

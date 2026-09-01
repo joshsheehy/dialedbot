@@ -140,20 +140,21 @@ export function repeatLabel({ row, count }) {
  * log stream.
  */
 export function formatExportReply({ baseUrl, path, token }) {
+  const url = `${baseUrl}/${path}?date=today&token=${token}`;
   return [
     'Apple Health export',
     '',
-    'URL (GET):',
-    `${baseUrl}/${path}?date=today`,
+    'Tap this to check it works — you should see today\'s numbers:',
+    url,
     '',
-    'Header:',
-    `Authorization: Bearer ${token}`,
+    'To sync into Apple Health: in the Shortcuts app, use "Get Contents of URL"',
+    'with that exact link (no headers needed), then "Log Health Sample" for',
+    'Dietary Energy, Protein, Carbohydrates and Total Fat.',
     '',
-    'Add these to a Shortcut with "Get Contents of URL", then "Log Health Sample"',
-    'for Dietary Energy, Protein, Carbohydrates and Total Fat.',
+    'Swap date=today for yesterday or a date like 2026-09-01.',
     '',
-    'date= accepts today, yesterday, or YYYY-MM-DD.',
-    'This token only reads the log — it cannot post messages to the bot.',
+    'This link only reads your food log — it cannot post to the bot or change',
+    'anything. Treat it like a private link and do not share it.',
   ].join('\n');
 }
 
