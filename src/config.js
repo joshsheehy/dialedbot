@@ -13,6 +13,26 @@ function optional(name, fallback) {
   return value && value.trim() ? value.trim() : fallback;
 }
 
+// Telegram's setWebhook rejects a secret_token outside this charset, and it
+// does so at startup with an opaque 400. Fail here with a usable message.
+const TELEGRAM_SECRET_TOKEN = /^[A-Za-z0-9_-]{1,256}$/;
+
+function assertValidWebhookSecret(secret) {
+  if (!TELEGRAM_SECRET_TOKEN.test(secret)) {
+    throw new Error(
+      'WEBHOOK_SECRET may only contain A-Z, a-z, 0-9, _ and - (1-256 characters) — ' +
+        'Telegram rejects any other character. Generate one with: openssl rand -hex 32',
+    );
+  }
+  if (secret.length < 16) {
+    console.warn(
+      `[config] WEBHOOK_SECRET is only ${secret.length} characters. It guards a public URL — ` +
+        'use at least 32. Generate one with: openssl rand -hex 32',
+    );
+  }
+  return secret;
+}
+
 function assertValidTimeZone(tz) {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
@@ -38,7 +58,7 @@ function resolvePublicUrl() {
 }
 
 export function loadConfig() {
-  const webhookSecret = required('WEBHOOK_SECRET');
+  const webhookSecret = assertValidWebhookSecret(required('WEBHOOK_SECRET'));
 
   return {
     telegramBotToken: required('TELEGRAM_BOT_TOKEN'),

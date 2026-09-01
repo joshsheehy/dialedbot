@@ -114,8 +114,13 @@ Copy [`.env.example`](.env.example) for the full annotated list.
 Generate a webhook secret:
 
 ```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+openssl rand -hex 32
 ```
+
+Telegram only accepts `A-Z`, `a-z`, `0-9`, `_` and `-` in a webhook secret token,
+so do not use a password generator with symbols enabled. The bot validates this
+at startup and refuses to boot with a clear message rather than failing later on
+an opaque Telegram 400.
 
 ### Finding your `AUTHORIZED_CHAT_ID`
 
