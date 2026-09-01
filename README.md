@@ -143,13 +143,23 @@ from a chat other than this one is dropped without a reply.
    The number after `"id":` is your chat ID — a positive integer for a personal
    chat.
 
+You can also just paste that URL into a browser — no terminal needed:
+`https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`.
+
 Do this *before* the webhook is registered. Telegram will not serve `getUpdates`
 while a webhook is active; if you have already deployed, run
 `curl -s "https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook"` first, get the
 ID, then redeploy to re-register.
 
-Alternatively, message [@userinfobot](https://t.me/userinfobot), which replies
-with your ID directly.
+Two alternatives that avoid the ordering problem entirely:
+
+- Message [@userinfobot](https://t.me/userinfobot), which replies with your ID.
+  Message it *directly* — nothing needs forwarding, and this has nothing to do
+  with your own bot.
+- Deploy with `AUTHORIZED_CHAT_ID` set to any placeholder, message your bot, and
+  read the ID off the Railway log line: `[bot] ignored a message from chat
+  123456789`. Set the real value and redeploy. Each unrecognised chat is logged
+  once per process, so this also tells you if a stranger finds your bot.
 
 ## Running locally
 

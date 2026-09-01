@@ -39,8 +39,24 @@ export function createBot({ config, queries, analyzer }) {
 
   // The bot token is publicly reachable, so gate everything on the one chat ID
   // we care about. Anyone else is dropped without a reply.
+  //
+  // Each unrecognised chat is logged once per process, never its content. That
+  // makes the logs a reliable way to discover your own chat ID during setup —
+  // deploy with a placeholder, message the bot, read the ID off the log line —
+  // and tells you if a stranger has found the bot.
+  const loggedUnknownChats = new Set();
   bot.use(async (ctx, next) => {
-    if (String(ctx.chat?.id ?? '') !== String(config.authorizedChatId)) return;
+    const chatId = String(ctx.chat?.id ?? '');
+    if (chatId !== String(config.authorizedChatId)) {
+      if (chatId && !loggedUnknownChats.has(chatId)) {
+        loggedUnknownChats.add(chatId);
+        console.warn(
+          `[bot] ignored a message from chat ${chatId} (AUTHORIZED_CHAT_ID is ${config.authorizedChatId}). ` +
+            'If that chat is you, set AUTHORIZED_CHAT_ID to it and redeploy.',
+        );
+      }
+      return;
+    }
     await next();
   });
 
