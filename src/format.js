@@ -56,9 +56,7 @@ export function formatMealReply({ id, result, totals }) {
   lines.push(assumptionLine(result));
   lines.push(`Today: ${macros(totals)} · ${mealCount(totals.meals)}`);
   lines.push('');
-  // The id is what makes /edit usable — surface it where a bad estimate is
-  // most likely to be noticed.
-  lines.push(`#${id} · wrong portion? /edit ${id} <correction>`);
+  lines.push(`#${id}`);
 
   return lines.join('\n');
 }
@@ -97,8 +95,25 @@ export function formatTodayReply(totals, entries, dateLabel) {
   }
 
   lines.push('');
-  lines.push('All figures are estimates. Correct one with /edit <id> <correction>.');
+  lines.push('All figures are estimates. Tap an entry to fix or delete it.');
 
+  return lines.join('\n');
+}
+
+/** One stored entry opened from the /today list. */
+export function formatEntryReply(row, timeLabel) {
+  let items = [];
+  try {
+    const parsed = JSON.parse(row.items_json);
+    items = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    items = [];
+  }
+
+  const lines = [`#${row.id} · logged ${timeLabel}`];
+  lines.push(...(items.length ? items.map(itemLine) : ['• (no items)']));
+  lines.push('');
+  lines.push(`Meal: ${macros(row)}`);
   return lines.join('\n');
 }
 
@@ -119,7 +134,7 @@ export function formatDailySummary(totals, dateLabel) {
   ].join('\n');
 }
 
-/** /undo — DB only. */
+/** /undo and delete-button confirmations — DB only. */
 export function formatUndoReply(row, timeLabel, totals) {
   return [
     `Deleted #${row.id}: ${describeRow(row)}`,
@@ -135,9 +150,12 @@ export const HELP_TEXT = [
   'Restaurant — "chicken bowl from Chipotle with rice, black beans, guac"',
   'Photo — send a picture of the meal (add a caption for extra detail)',
   '',
-  '/today — running total, with entry ids',
-  '/edit <id> <correction> — re-estimate an entry, e.g. /edit 42 the chicken was 8oz',
+  'Every reply has Fix and Delete buttons — tap them, no typing needed.',
+  '',
+  '/today — running total; tap any entry to fix or delete it',
   '/undo — delete the most recent entry',
+  '/delete <id> — delete a specific entry',
+  '/edit <id> <correction> — re-estimate an entry',
   '',
   'Every figure is an estimate. Each reply shows what I assumed so you can correct it.',
 ].join('\n');

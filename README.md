@@ -41,10 +41,23 @@ you correct any of them.
 |---|---|
 | *(any text)* | Log a meal, reply with items, macros, assumptions, and today's total |
 | *(any photo)* | Same, from the picture — add a caption for extra detail |
-| `/today` | Today's running total, plus each entry's id |
-| `/edit <id> <correction>` | Re-estimate an entry and update it in place |
+| `/today` | Today's running total; every entry is a tappable button |
 | `/undo` | Delete the most recent entry |
+| `/delete <id>` | Delete a specific entry |
+| `/edit <id> <correction>` | Re-estimate an entry and update it in place |
 | `/help` | Usage reminder |
+
+Typing ids is the fallback, not the main path. Every logging reply carries
+**✏️ Fix** and **🗑 Delete** buttons:
+
+- **Delete** removes that entry immediately and rewrites the message to say so,
+  so scrollback stays accurate. It reaches any entry, not just the most recent.
+- **Fix** sends a reply prompt naming the entry. Whatever you type next is
+  applied as a correction to it rather than logged as a new meal.
+
+`/today` lists every entry of the day as a button; tapping one opens it with the
+same two buttons. Button taps cost nothing — only the correction itself is a
+paid call.
 
 Every logging reply ends with the entry's id, so a bad estimate can be corrected
 straight away:
@@ -64,10 +77,15 @@ Today: 486 kcal · 57P / 45C / 6F · 1 meal
 /edit 42 the chicken was 8oz and cooked in a tablespoon of olive oil
 ```
 
-`/edit` keeps the entry's original timestamp and source — a correction changes
-the numbers, not when the meal happened — so it cannot move a meal across a day
-boundary. Corrections accumulate as context, so a second `/edit` on the same
-entry still sees the original description.
+Corrections keep the entry's original timestamp and source — a correction
+changes the numbers, not when the meal happened — so one cannot move a meal
+across a day boundary. Corrections accumulate as context, so a second fix on the
+same entry still sees the original description.
+
+**Why the reply prompt matters.** Typing a correction as an ordinary message
+logs it as a *new meal* — the bot has no way to know it was meant as an edit.
+Replying to a Fix prompt is unambiguous, which is why Fix is a button rather
+than an instruction to type `/edit`.
 
 ## Railway setup
 
@@ -186,6 +204,10 @@ port 8080 with a tunnel (`cloudflared tunnel --url http://localhost:8080`) and
 set `PUBLIC_URL` to the resulting HTTPS URL.
 
 ## Design notes
+
+**Button taps need `callback_query`.** `allowed_updates` is deliberately narrow
+to cut traffic, so it lists `message` and `callback_query` explicitly. Dropping
+the latter would silently break every button.
 
 **Webhook, not long polling.** The process sits idle between messages instead of
 holding an open request to Telegram, which is what keeps Railway CPU and egress

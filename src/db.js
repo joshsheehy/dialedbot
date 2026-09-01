@@ -169,6 +169,14 @@ export function createQueries(db) {
       });
     },
 
+    /** Delete one entry by id, scoped to the chat. Returns the row, or null. */
+    deleteEntry(chatId, id) {
+      const row = byId.get(id, String(chatId));
+      if (!row) return null;
+      deleteById.run(row.id);
+      return row;
+    },
+
     /** Delete the most recent entry. Returns the deleted row, or null. */
     deleteLatest(chatId) {
       const row = latest.get(String(chatId));

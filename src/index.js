@@ -28,8 +28,9 @@ async function main() {
     await bot.api.setWebhook(webhookUrl, {
       secret_token: config.webhookSecret,
       // Only ask Telegram for what we actually handle — fewer requests hitting
-      // the service, less egress.
-      allowed_updates: ['message'],
+      // the service, less egress. callback_query carries the inline-button
+      // taps; without it Telegram never delivers them.
+      allowed_updates: ['message', 'callback_query'],
       // Don't replay a backlog of messages accumulated during a redeploy.
       drop_pending_updates: true,
     });

@@ -1,10 +1,11 @@
-import { Bot } from 'grammy';
+import { Bot, InlineKeyboard } from 'grammy';
 import { pickPhotoSize } from './image.js';
 import { localDayRange, formatLocalDate, formatLocalTime } from './time.js';
 import {
   formatMealReply,
   formatEditReply,
   formatTodayReply,
+  formatEntryReply,
   formatUndoReply,
   describeRow,
   HELP_TEXT,
@@ -15,6 +16,15 @@ const FRIENDLY_ERROR =
 
 // Keeps raw_input bounded when an entry is corrected repeatedly.
 const MAX_RAW_INPUT = 2000;
+
+// The Fix button asks a question carrying the entry id. The user's reply to it
+// is routed as a correction instead of a new meal, so ids never need typing.
+const FIX_PROMPT = (id, label) => `Correcting #${id} — ${label}\n\nWhat should I change?`;
+const FIX_PROMPT_RE = /^Correcting #(\d+) —/;
+
+/** Fix / Delete buttons attached to a single entry. */
+const entryKeyboard = (id) =>
+  new InlineKeyboard().text('✏️ Fix', `fix:${id}`).text('🗑 Delete', `del:${id}`);
 
 async function downloadTelegramFile(ctx, fileId, token) {
   const file = await ctx.api.getFile(fileId);
@@ -37,13 +47,11 @@ export function createBot({ config, queries, analyzer }) {
     };
   };
 
+  const timeOf = (row) => formatLocalTime(config.timeZone, new Date(row.ts));
+
   // The bot token is publicly reachable, so gate everything on the one chat ID
-  // we care about. Anyone else is dropped without a reply.
-  //
-  // Each unrecognised chat is logged once per process, never its content. That
-  // makes the logs a reliable way to discover your own chat ID during setup —
-  // deploy with a placeholder, message the bot, read the ID off the log line —
-  // and tells you if a stranger has found the bot.
+  // we care about. Anyone else is dropped without a reply. This covers button
+  // taps too — ctx.chat is set for callback queries as well as messages.
   const loggedUnknownChats = new Set();
   bot.use(async (ctx, next) => {
     const chatId = String(ctx.chat?.id ?? '');
@@ -62,38 +70,50 @@ export function createBot({ config, queries, analyzer }) {
 
   bot.command(['start', 'help'], (ctx) => ctx.reply(HELP_TEXT));
 
-  // DB only — no API call.
+  // ---- DB-only commands (no API call) ------------------------------------
+
   bot.command('today', async (ctx) => {
     const { totals, entries } = today();
-    await ctx.reply(formatTodayReply(totals, entries, formatLocalDate(config.timeZone)));
+    // One button per entry so any of them can be reached, not just the last.
+    // .row() goes BETWEEN buttons — calling it after the last one leaves an
+    // empty row in the markup.
+    const keyboard = new InlineKeyboard();
+    entries.forEach((row, index) => {
+      if (index > 0) keyboard.row();
+      keyboard.text(`#${row.id} ${describeRow(row)}`.slice(0, 60), `show:${row.id}`);
+    });
+    await ctx.reply(formatTodayReply(totals, entries, formatLocalDate(config.timeZone)), {
+      reply_markup: entries.length ? keyboard : undefined,
+    });
   });
 
-  // DB only — no API call.
   bot.command('undo', async (ctx) => {
     const row = queries.deleteLatest(config.authorizedChatId);
     if (!row) {
       await ctx.reply('Nothing to undo — the log is empty.');
       return;
     }
-    await ctx.reply(
-      formatUndoReply(row, formatLocalTime(config.timeZone, new Date(row.ts)), today().totals),
-    );
+    await ctx.reply(formatUndoReply(row, timeOf(row), today().totals));
   });
 
-  // /edit <id> <correction> — costs ONE paid call, like logging a meal.
-  bot.command('edit', async (ctx) => {
-    const argument = (ctx.match ?? '').trim();
-    const match = argument.match(/^(\d+)\s+(.+)$/s);
-    if (!match) {
-      await ctx.reply(
-        'Usage: /edit <id> <correction>\nFor example: /edit 42 the chicken was 8oz, no oil\nRun /today to see entry ids.',
-      );
+  bot.command('delete', async (ctx) => {
+    const id = Number((ctx.match ?? '').trim());
+    if (!Number.isInteger(id) || id < 1) {
+      await ctx.reply('Usage: /delete <id>\nRun /today to see entry ids, or tap 🗑 on any reply.');
       return;
     }
+    const row = queries.deleteEntry(config.authorizedChatId, id);
+    if (!row) {
+      await ctx.reply(`No entry #${id}. Run /today to see current ids.`);
+      return;
+    }
+    await ctx.reply(formatUndoReply(row, timeOf(row), today().totals));
+  });
 
-    const id = Number(match[1]);
-    const correction = match[2].trim();
+  // ---- Corrections (ONE paid call) ---------------------------------------
 
+  /** Shared by /edit and by a reply to a Fix prompt. */
+  async function applyCorrection(ctx, id, correction) {
     const row = queries.getEntry(config.authorizedChatId, id);
     if (!row) {
       await ctx.reply(`No entry #${id}. Run /today to see current ids.`);
@@ -104,7 +124,8 @@ export function createBot({ config, queries, analyzer }) {
     try {
       let previousItems = [];
       try {
-        previousItems = JSON.parse(row.items_json);
+        const parsed = JSON.parse(row.items_json);
+        previousItems = Array.isArray(parsed) ? parsed : [];
       } catch {
         previousItems = [];
       }
@@ -115,19 +136,86 @@ export function createBot({ config, queries, analyzer }) {
         correction,
       });
 
-      // Keep the correction history so a second /edit on the same row still has
+      // Keep the correction history so a second fix on the same row still has
       // the full picture to work from.
       const rawInput = `${row.raw_input ?? ''}\n↳ ${correction}`.trim().slice(-MAX_RAW_INPUT);
       queries.updateEntry({ id, rawInput, result });
 
-      await ctx.reply(formatEditReply({ id, result, totals: today().totals }));
+      await ctx.reply(formatEditReply({ id, result, totals: today().totals }), {
+        reply_markup: entryKeyboard(id),
+      });
     } catch (error) {
-      console.error('[bot] edit failed:', error);
+      console.error('[bot] correction failed:', error);
       await ctx.reply(`${FRIENDLY_ERROR}\n#${id} is unchanged: ${describeRow(row)}`);
     }
+  }
+
+  bot.command('edit', async (ctx) => {
+    const match = (ctx.match ?? '').trim().match(/^(\d+)\s+(.+)$/s);
+    if (!match) {
+      await ctx.reply(
+        'Usage: /edit <id> <correction>\nFor example: /edit 42 the chicken was 8oz\n\nEasier: tap ✏️ Fix on any reply, or run /today and tap an entry.',
+      );
+      return;
+    }
+    await applyCorrection(ctx, Number(match[1]), match[2].trim());
   });
 
-  /** Persist an analysed meal and reply with it plus the running daily total. */
+  // ---- Button taps --------------------------------------------------------
+
+  bot.on('callback_query:data', async (ctx) => {
+    const [action, rawId] = ctx.callbackQuery.data.split(':');
+    const id = Number(rawId);
+
+    if (!Number.isInteger(id)) {
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    if (action === 'del') {
+      const row = queries.deleteEntry(config.authorizedChatId, id);
+      await ctx.answerCallbackQuery({ text: row ? `Deleted #${id}` : `#${id} is already gone` });
+      if (row) {
+        const { totals } = today();
+        // Rewrite the original message so the log reads correctly on scrollback.
+        await ctx
+          .editMessageText(formatUndoReply(row, timeOf(row), totals))
+          .catch(() => ctx.reply(formatUndoReply(row, timeOf(row), totals)));
+      }
+      return;
+    }
+
+    if (action === 'fix') {
+      const row = queries.getEntry(config.authorizedChatId, id);
+      if (!row) {
+        await ctx.answerCallbackQuery({ text: `#${id} is gone` });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      // force_reply pre-aims the keyboard at this prompt, so the next thing
+      // typed is treated as a correction rather than a new meal.
+      await ctx.reply(FIX_PROMPT(id, describeRow(row)), {
+        reply_markup: { force_reply: true, input_field_placeholder: 'e.g. the chicken was 8oz' },
+      });
+      return;
+    }
+
+    if (action === 'show') {
+      const row = queries.getEntry(config.authorizedChatId, id);
+      if (!row) {
+        await ctx.answerCallbackQuery({ text: `#${id} is gone` });
+        return;
+      }
+      await ctx.answerCallbackQuery();
+      await ctx.reply(formatEntryReply(row, timeOf(row)), { reply_markup: entryKeyboard(id) });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+  });
+
+  // ---- Logging meals ------------------------------------------------------
+
   async function logAndReply(ctx, result, rawInput) {
     const id = queries.addEntry({
       chatId: config.authorizedChatId,
@@ -136,13 +224,26 @@ export function createBot({ config, queries, analyzer }) {
       rawInput,
       result,
     });
-    await ctx.reply(formatMealReply({ id, result, totals: today().totals }));
+    await ctx.reply(formatMealReply({ id, result, totals: today().totals }), {
+      reply_markup: entryKeyboard(id),
+    });
   }
 
   // Modes 1 and 2: one paid claude-haiku-4-5 call.
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     if (!text || text.startsWith('/')) return;
+
+    // A reply to a Fix prompt is a correction to that entry, NOT a new meal.
+    // Without this check every attempted correction logs another meal.
+    const repliedTo = ctx.message.reply_to_message;
+    if (repliedTo?.from?.id === ctx.me.id) {
+      const fixing = FIX_PROMPT_RE.exec(repliedTo.text ?? '');
+      if (fixing) {
+        await applyCorrection(ctx, Number(fixing[1]), text);
+        return;
+      }
+    }
 
     await ctx.replyWithChatAction('typing').catch(() => {});
     try {
