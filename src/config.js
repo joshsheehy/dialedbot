@@ -84,6 +84,19 @@ export function loadConfig() {
     // the shared token never shows up in a URL, an access log, or a referrer.
     webhookPath: crypto.createHash('sha256').update(webhookSecret).digest('hex').slice(0, 32),
 
+    // The Apple Health export lives on its own derived path and its own derived
+    // bearer token. The token is NOT WEBHOOK_SECRET: it is stored on the phone
+    // in a Shortcut, and if it ever leaks it must not also unlock the webhook.
+    exportPath: crypto
+      .createHash('sha256')
+      .update(`${webhookSecret}:export-path`)
+      .digest('hex')
+      .slice(0, 32),
+    exportToken: crypto
+      .createHash('sha256')
+      .update(`${webhookSecret}:export-token`)
+      .digest('hex'),
+
     timeZone: assertValidTimeZone(optional('TZ', 'America/Chicago')),
     dbPath: optional('DB_PATH', '/data/foodlog.db'),
     port: assertValidPort(optional('PORT', '8080')),

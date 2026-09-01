@@ -20,7 +20,7 @@ exactly one call; nothing else costs anything.
 | Photo | Downscaled to 768px JPEG, then one `claude-haiku-4-5` call | **1** |
 | `/edit` | One call, re-estimating an existing entry | **1** |
 | **🔁 Again / `/recent`** | Copies a stored entry's numbers | **0** |
-| `/today`, `/undo`, `/delete`, the 21:00 summary | SQLite only | **0** |
+| `/today`, `/undo`, `/delete`, `/export`, the 21:00 summary | SQLite only | **0** |
 
 The routing lives in [`src/analyze.js`](src/analyze.js), commented at each
 decision point. No path makes more than one call.
@@ -47,6 +47,7 @@ you correct any of them.
 | `/undo` | Delete the most recent entry |
 | `/delete <id>` | Delete a specific entry |
 | `/edit <id> <correction>` | Re-estimate an entry and update it in place |
+| `/export` | URL + token for the Apple Health Shortcut |
 | `/help` | Usage reminder |
 
 Typing ids is the fallback, not the main path. Every logging reply carries
@@ -96,6 +97,44 @@ same entry still sees the original description.
 logs it as a *new meal* — the bot has no way to know it was meant as an edit.
 Replying to a Fix prompt is unambiguous, which is why Fix is a button rather
 than an instruction to type `/edit`.
+
+## Apple Health / WHOOP
+
+HealthKit has no server API — only code running on the device can write to it —
+so the bot publishes the day's numbers and an iOS Shortcut does the writing.
+WHOOP's Journal reads macros from Apple Health, so anything written there flows
+on to WHOOP.
+
+Send `/export` to the bot. It replies with a URL and a bearer token:
+
+```
+GET https://<your-domain>/<export-path>?date=today
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "date": "2026-09-01", "timezone": "America/Chicago", "meals": 2,
+  "kcal": 600, "protein_g": 20, "carbs_g": 108, "fat_g": 12,
+  "entries": [ { "id": 1, "at": "2026-09-01T22:35:38.088Z", "name": "Oatmeal",
+                 "source": "text", "kcal": 300, "protein_g": 10, "carbs_g": 54, "fat_g": 6 } ]
+}
+```
+
+Daily totals for a simple four-sample Shortcut; `entries[]` for one that wants
+real per-meal timestamps. `date=` accepts `today`, `yesterday`, or `YYYY-MM-DD`.
+
+Building the Shortcut: **Get Contents of URL** (method GET, the header above) →
+**Get Dictionary Value** for `kcal` → **Log Health Sample** with type *Dietary
+Energy* → repeat for `protein_g`, `carbs_g`, `fat_g` against *Protein*,
+*Carbohydrates* and *Total Fat*. A Personal Automation set to just after 21:00
+runs it unattended.
+
+The endpoint is read-only and costs no API call. Its path and bearer token are
+derived from `WEBHOOK_SECRET` but are **not** `WEBHOOK_SECRET` — a token sitting
+in a Shortcut on a phone must not also unlock the webhook, so the two are
+separately derived and neither works in the other's place. There is no new
+environment variable; rotating `WEBHOOK_SECRET` rotates both.
 
 ## Railway setup
 
@@ -266,7 +305,7 @@ cannot be analysed gets a friendly error and writes no row.
 src/
   index.js        startup: config, DB, server, webhook registration, cron
   config.js       environment parsing and validation
-  server.js       minimal HTTP server: health check + verified webhook endpoint
+  server.js       HTTP server: health check, verified webhook, Health export
   bot.js          grammY handlers, chat-ID gate, commands
   analyze.js      routing — where the one paid call happens in each path
   repeats.js      grouping the log into distinct meals for one-tap re-logging

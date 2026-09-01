@@ -60,14 +60,47 @@ function localMidnightToUtc(timeZone, year, month, day) {
   return ts;
 }
 
-/** UTC [start, end) covering the local calendar day containing `date`. */
-export function localDayRange(timeZone, date = new Date()) {
-  const { year, month, day } = localYmd(timeZone, date);
+/** UTC [start, end) covering an explicit local calendar day. */
+export function localDayRangeForYmd(timeZone, year, month, day) {
   return {
     start: localMidnightToUtc(timeZone, year, month, day),
     // Date.UTC normalises day+1 across month and year boundaries.
     end: localMidnightToUtc(timeZone, year, month, day + 1),
   };
+}
+
+/** UTC [start, end) covering the local calendar day containing `date`. */
+export function localDayRange(timeZone, date = new Date()) {
+  const { year, month, day } = localYmd(timeZone, date);
+  return localDayRangeForYmd(timeZone, year, month, day);
+}
+
+/**
+ * Resolve an export date selector to a local calendar day.
+ * Accepts "today", "yesterday", or "YYYY-MM-DD". Returns null if unparseable.
+ */
+export function resolveDaySelector(timeZone, selector = 'today') {
+  const value = String(selector).trim().toLowerCase();
+
+  if (value === 'today' || value === '') {
+    const { year, month, day } = localYmd(timeZone, new Date());
+    return { year, month, day };
+  }
+
+  if (value === 'yesterday') {
+    const { year, month, day } = localYmd(timeZone, new Date());
+    // Date.UTC normalises day-1 back across month and year boundaries.
+    const shifted = new Date(Date.UTC(year, month - 1, day - 1));
+    return {
+      year: shifted.getUTCFullYear(),
+      month: shifted.getUTCMonth() + 1,
+      day: shifted.getUTCDate(),
+    };
+  }
+
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!iso) return null;
+  return { year: Number(iso[1]), month: Number(iso[2]), day: Number(iso[3]) };
 }
 
 /** e.g. "Mon, Sep 1" — for the daily summary header. */

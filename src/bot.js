@@ -8,6 +8,7 @@ import {
   formatEntryReply,
   formatUndoReply,
   formatRecentReply,
+  formatExportReply,
   repeatLabel,
   describeRow,
   HELP_TEXT,
@@ -112,6 +113,22 @@ export function createBot({ config, queries, analyzer }) {
     await ctx.reply(formatRecentReply(repeats), {
       reply_markup: repeats.length ? keyboard : undefined,
     });
+  });
+
+  // Hands over the Apple Health export credentials. Delivered here rather than
+  // logged, since Railway's log stream is the wrong place for a token.
+  bot.command('export', async (ctx) => {
+    if (!config.publicUrl) {
+      await ctx.reply('No public URL is configured yet, so there is nothing to export from.');
+      return;
+    }
+    await ctx.reply(
+      formatExportReply({
+        baseUrl: config.publicUrl,
+        path: config.exportPath,
+        token: config.exportToken,
+      }),
+    );
   });
 
   bot.command('undo', async (ctx) => {

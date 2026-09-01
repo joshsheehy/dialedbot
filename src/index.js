@@ -18,7 +18,7 @@ async function main() {
   // Webhook mode: no long polling, so the process sits idle between messages.
   await bot.init();
 
-  const server = createServer({ config, bot });
+  const server = createServer({ config, queries, bot });
   await new Promise((resolve) => server.listen(config.port, resolve));
   console.log(`[server] listening on :${config.port}`);
   console.log(`[db] using ${config.dbPath}`);

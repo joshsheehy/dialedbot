@@ -134,6 +134,29 @@ export function repeatLabel({ row, count }) {
   return `🔁 ${describeRow(row)}${times}`.slice(0, 60);
 }
 
+/**
+ * /export — the details needed to build the Apple Health Shortcut.
+ * Sent over Telegram rather than logged, so the token never lands in Railway's
+ * log stream.
+ */
+export function formatExportReply({ baseUrl, path, token }) {
+  return [
+    'Apple Health export',
+    '',
+    'URL (GET):',
+    `${baseUrl}/${path}?date=today`,
+    '',
+    'Header:',
+    `Authorization: Bearer ${token}`,
+    '',
+    'Add these to a Shortcut with "Get Contents of URL", then "Log Health Sample"',
+    'for Dietary Energy, Protein, Carbohydrates and Total Fat.',
+    '',
+    'date= accepts today, yesterday, or YYYY-MM-DD.',
+    'This token only reads the log — it cannot post messages to the bot.',
+  ].join('\n');
+}
+
 /** 21:00 cron message — DB only. */
 export function formatDailySummary(totals, dateLabel) {
   if (totals.meals === 0) return `Daily summary — ${dateLabel}\nNo meals logged today.`;
@@ -170,6 +193,7 @@ export const HELP_TEXT = [
   'Every reply has Fix, Again and Delete buttons — tap them, no typing needed.',
   '',
   '/recent — your usual meals; tap one to re-log it free and instantly',
+  '/export — URL + token for the Apple Health Shortcut',
   '/today — running total; tap any entry to fix, repeat or delete it',
   '/undo — delete the most recent entry',
   '/delete <id> — delete a specific entry',
