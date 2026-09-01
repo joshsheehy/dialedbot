@@ -1,0 +1,21 @@
+{
+  "name": "dialedbot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Single-user calorie/macro tracking Telegram bot. One always-on Node service, SQLite on a Railway volume.",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.72.0",
+    "better-sqlite3": "^12.4.1",
+    "grammy": "^1.39.1",
+    "node-cron": "^4.6.0",
+    "sharp": "^0.35.4"
+  }
+}
