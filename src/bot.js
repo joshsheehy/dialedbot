@@ -21,6 +21,14 @@ const FRIENDLY_ERROR =
 // Keeps raw_input bounded when an entry is corrected repeatedly.
 const MAX_RAW_INPUT = 2000;
 
+/**
+ * Telegram has no "album" update: sending several photos at once delivers one
+ * message per photo, all sharing a media_group_id, arriving milliseconds apart.
+ * Buffer them and fire once the group goes quiet, so several angles of one meal
+ * become one entry and one paid call instead of one of each per photo.
+ */
+const ALBUM_SETTLE_MS = 2000;
+
 // The Fix button asks a question carrying the entry id. The user's reply to it
 // is routed as a correction instead of a new meal, so ids never need typing.
 const FIX_PROMPT = (id, label) => `Correcting #${id} — ${label}\n\nWhat should I change?`;
@@ -344,19 +352,64 @@ export function createBot({ config, queries, analyzer }) {
     }
   });
 
-  // Mode 3: downscale, then one paid claude-haiku-4-5 vision call.
-  bot.on('message:photo', async (ctx) => {
-    await ctx.replyWithChatAction('typing').catch(() => {});
+  /** Download, analyse and log a set of photos as ONE meal. */
+  async function handlePhotos(ctx, photoSets, caption) {
     try {
-      const size = pickPhotoSize(ctx.message.photo);
-      const buffer = await downloadTelegramFile(ctx, size.file_id, config.telegramBotToken);
-      const caption = ctx.message.caption?.trim() || null;
-      const result = await analyzer.analyzePhoto(buffer, caption);
-      await logAndReply(ctx, result, caption ?? '(photo)');
+      const buffers = [];
+      for (const photo of photoSets) {
+        // Smallest Telegram variant at or above 768px — least egress for the
+        // resolution we actually need.
+        const size = pickPhotoSize(photo);
+        buffers.push(await downloadTelegramFile(ctx, size.file_id, config.telegramBotToken));
+      }
+
+      const result = await analyzer.analyzePhotos(buffers, caption);
+      const fallbackLabel = buffers.length > 1 ? `(${buffers.length} photos)` : '(photo)';
+      await logAndReply(ctx, result, caption ?? fallbackLabel);
     } catch (error) {
       console.error('[bot] photo analysis failed:', error);
       await ctx.reply(FRIENDLY_ERROR);
     }
+  }
+
+  // media_group_id -> photos collected so far, plus the timer that fires once
+  // the group stops growing. In memory only: a restart mid-album loses it,
+  // which is the right trade for not adding storage to a two-second window.
+  const pendingAlbums = new Map();
+
+  // Mode 3: downscale, then one paid claude-haiku-4-5 vision call.
+  bot.on('message:photo', async (ctx) => {
+    const caption = ctx.message.caption?.trim() || null;
+    const groupId = ctx.message.media_group_id;
+
+    // A lone photo needs no buffering.
+    if (!groupId) {
+      await ctx.replyWithChatAction('typing').catch(() => {});
+      await handlePhotos(ctx, [ctx.message.photo], caption);
+      return;
+    }
+
+    let album = pendingAlbums.get(groupId);
+    if (!album) {
+      album = { ctx, photoSets: [], caption: null, timer: null };
+      pendingAlbums.set(groupId, album);
+      // Shown once for the whole album, not once per photo.
+      await ctx.replyWithChatAction('typing').catch(() => {});
+    }
+
+    album.photoSets.push(ctx.message.photo);
+    // Telegram puts the caption on one message of the album; take the first.
+    if (caption && !album.caption) album.caption = caption;
+
+    // Each new photo pushes the deadline back, so the album fires only once
+    // every part has landed.
+    clearTimeout(album.timer);
+    album.timer = setTimeout(() => {
+      pendingAlbums.delete(groupId);
+      handlePhotos(album.ctx, album.photoSets, album.caption).catch((error) => {
+        console.error('[bot] album handling failed:', error);
+      });
+    }, ALBUM_SETTLE_MS);
   });
 
   // Anything else (voice, video, stickers, documents) — no API call, just a nudge.

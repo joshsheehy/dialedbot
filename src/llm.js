@@ -210,20 +210,31 @@ export function createLlm(apiKey) {
       ]);
     },
 
-    /** Mode 3: a pre-downscaled JPEG plus the optional Telegram caption. */
-    estimateFromImage(jpegBuffer, caption) {
-      return request([
-        {
-          type: 'image',
-          source: { type: 'base64', media_type: 'image/jpeg', data: jpegBuffer.toString('base64') },
-        },
-        {
-          type: 'text',
-          text: caption
-            ? `Identify the foods in this photo, estimate the portions, and return the macros. The user added: "${caption}"`
-            : 'Identify the foods in this photo, estimate the portions, and return the macros.',
-        },
-      ]);
+    /**
+     * Mode 3: one or more pre-downscaled JPEGs plus the optional caption.
+     * Several photos mean several angles of ONE meal, so the prompt is explicit
+     * that items visible in more than one frame must be counted once.
+     */
+    estimateFromImages(jpegBuffers, caption) {
+      const blocks = jpegBuffers.map((buffer) => ({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: buffer.toString('base64') },
+      }));
+
+      const instruction =
+        jpegBuffers.length > 1
+          ? `These ${jpegBuffers.length} photos are different angles of the SAME single meal. ` +
+            'Identify the foods once across all of them — do NOT add up the same item twice ' +
+            'because it appears in more than one photo. Use the angles together to judge portions ' +
+            'more accurately, then return the macros for that one meal.'
+          : 'Identify the foods in this photo, estimate the portions, and return the macros.';
+
+      blocks.push({
+        type: 'text',
+        text: caption ? `${instruction} The user added: "${caption}"` : instruction,
+      });
+
+      return request(blocks);
     },
 
     /**

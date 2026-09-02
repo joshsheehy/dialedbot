@@ -18,12 +18,24 @@ exactly one call; nothing else costs anything.
 | Text — *"200g chicken breast and a cup of white rice"* | One `claude-haiku-4-5` call | **1** |
 | Restaurant — *"chicken bowl from Chipotle with rice, black beans, guac"* | Same call. The prompt tells the model to use the chain's published values where it knows the item, and to estimate from the dish description otherwise | **1** |
 | Photo | Downscaled to 768px JPEG, then one `claude-haiku-4-5` call | **1** |
+| Several photos of one meal | All angles go into that same single call | **1** |
 | `/edit` | One call, re-estimating an existing entry | **1** |
 | **🔁 Again / `/recent`** | Copies a stored entry's numbers | **0** |
 | `/today`, `/undo`, `/delete`, `/export`, the 21:00 summary | SQLite only | **0** |
 
 The routing lives in [`src/analyze.js`](src/analyze.js), commented at each
 decision point. No path makes more than one call.
+
+**Several photos at once are one meal.** Telegram has no "album" update — it
+sends one message per photo, all sharing a `media_group_id`, milliseconds apart.
+The bot buffers them for two seconds and fires once the group stops growing, so
+three angles of a steak become one entry and one call rather than three of each.
+The prompt tells the model the frames are the same meal and that an item visible
+in more than one must not be counted twice. A lone photo skips the buffer and is
+handled immediately.
+
+Extra angles cost a few hundred image tokens each, not another request, and they
+measurably help with portion size — the hardest thing to judge from one frame.
 
 Photos are the most expensive path per call, so two things keep them cheap:
 Telegram already sends several pre-scaled variants, so the bot downloads the
@@ -42,6 +54,7 @@ you correct any of them.
 |---|---|
 | *(any text)* | Log a meal, reply with items, macros, assumptions, and today's total |
 | *(any photo)* | Same, from the picture — add a caption for extra detail |
+| *(several photos at once)* | Angles of one meal → one entry, one call |
 | `/recent` | Your usual meals; tap one to re-log it instantly, free |
 | `/today` | Today's running total; every entry is a tappable button |
 | `/undo` | Delete the most recent entry |
