@@ -11,8 +11,11 @@ async function main() {
 
   const db = openDb(config.dbPath);
   const queries = createQueries(db);
-  const llm = createLlm(config.anthropicApiKey);
-  const analyzer = createAnalyzer({ llm });
+  const llm = createLlm(config.anthropicApiKey, {
+    textModel: config.textModel,
+    photoModel: config.photoModel,
+  });
+  const analyzer = createAnalyzer({ llm, config });
   const bot = createBot({ config, queries, analyzer });
 
   // Webhook mode: no long polling, so the process sits idle between messages.
@@ -22,6 +25,9 @@ async function main() {
   await new Promise((resolve) => server.listen(config.port, resolve));
   console.log(`[server] listening on :${config.port}`);
   console.log(`[db] using ${config.dbPath}`);
+  console.log(
+    `[llm] text=${config.textModel} photo=${config.photoModel} @ ${config.photoMaxEdge}px`,
+  );
 
   if (config.publicUrl) {
     const webhookUrl = `${config.publicUrl}/${config.webhookPath}`;

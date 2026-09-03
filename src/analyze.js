@@ -24,7 +24,7 @@ function classifySource(text) {
   return /\b(?:from|at)\s+[A-Za-z]/i.test(text ?? '') ? 'restaurant' : 'text';
 }
 
-export function createAnalyzer({ llm }) {
+export function createAnalyzer({ llm, config }) {
   return {
     /** Modes 1 and 2 — identical routing, they only differ in the stored `source`. */
     async analyzeText(text) {
@@ -37,10 +37,14 @@ export function createAnalyzer({ llm }) {
      * angles — and resolves them in ONE call. More photos cost a few hundred
      * extra image tokens each, not another request.
      */
-    async analyzePhotos(imageBuffers, caption) {
-      // Shrink first so we pay for ~768px of vision tokens, not the originals.
-      const jpegs = await Promise.all(imageBuffers.map((buffer) => downscaleToJpeg(buffer)));
-      const result = await llm.estimateFromImages(jpegs, caption); // PAID — exactly one call
+    async analyzePhotos(imageBuffers, caption, reference) {
+      // Resize to the largest edge the model reads at full detail — no further,
+      // since anything beyond it is downscaled server-side anyway.
+      const jpegs = await Promise.all(
+        imageBuffers.map((buffer) => downscaleToJpeg(buffer, config.photoMaxEdge)),
+      );
+      // PAID — exactly one call, on the stronger photo model.
+      const result = await llm.estimateFromImages(jpegs, caption, reference);
       return { ...result, source: 'photo' };
     },
 

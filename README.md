@@ -26,6 +26,39 @@ exactly one call; nothing else costs anything.
 The routing lives in [`src/analyze.js`](src/analyze.js), commented at each
 decision point. No path makes more than one call.
 
+### Photo accuracy
+
+Identification, not arithmetic, is where photo logging goes wrong — rice read as
+mashed potato, kimchi as shredded carrot. Four things address it:
+
+**Resolution.** Photos were originally downscaled to 768px to minimise tokens.
+That was the wrong trade: telling grains from mash is a fine-texture judgement,
+and at 768px a bowl filling a quarter of the frame is ~200px across with the
+texture gone. They now go to 1568px — the largest edge the model reads at full
+detail — at JPEG quality 90 rather than 80, since compression artifacts smear
+exactly that texture. Roughly doubles per-photo cost, in fractions of a cent.
+
+**Model.** `TEXT_MODEL` stays on the cheap model, which handles unambiguous
+descriptions well. `PHOTO_MODEL` defaults to a stronger one, because perception
+is the hard part. Both are env vars — set `PHOTO_MODEL=claude-haiku-4-5` to
+revert.
+
+**Prompt.** Photos get their own system prompt that makes the model describe
+what it sees before naming a dish, calls out the confusable pairs explicitly,
+supplies real-world sizes for hands, cutlery and tableware to measure against,
+and requires the scale reference used and any uncertainty to appear in
+`assumptions` rather than be hidden.
+
+**Scale references.** `/reference my palm is 9cm across, my dinner plate is 26cm`
+stores your own measurements, which are then preferred over the generic
+averages. Put a hand next to the plate when shooting and portions become far
+more accurate — portion size is the single largest error source, and nothing in
+a photo conveys it unless something of known size is in frame.
+
+**Sending as a file.** Telegram compresses anything sent as a *photo* to around
+1280px. Sent as a *file* it arrives uncompressed, and the bot accepts image
+documents up to 25 MB. That is the highest-detail path.
+
 **Several photos at once are one meal.** Telegram has no "album" update — it
 sends one message per photo, all sharing a `media_group_id`, milliseconds apart.
 The bot buffers them for two seconds and fires once the group stops growing, so
@@ -60,6 +93,7 @@ you correct any of them.
 | `/undo` | Delete the most recent entry |
 | `/delete <id>` | Delete a specific entry |
 | `/edit <id> <correction>` | Re-estimate an entry and update it in place |
+| `/reference` | Save your hand/plate sizes so photo portions are judged against them |
 | `/export` | URL + token for the Apple Health Shortcut |
 | `/help` | Usage reminder |
 

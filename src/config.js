@@ -97,6 +97,14 @@ export function loadConfig() {
       .update(`${webhookSecret}:export-token`)
       .digest('hex'),
 
+    // Text descriptions are unambiguous, so the cheap model handles them well.
+    // Photos are a much harder perception problem and were the source of
+    // misidentifications, so they default to a stronger model. Both are
+    // overridable without a code change.
+    textModel: optional('TEXT_MODEL', 'claude-haiku-4-5'),
+    photoModel: optional('PHOTO_MODEL', 'claude-sonnet-5'),
+    photoMaxEdge: Number(optional('PHOTO_MAX_EDGE', '1568')),
+
     timeZone: assertValidTimeZone(optional('TZ', 'America/Chicago')),
     dbPath: optional('DB_PATH', '/data/foodlog.db'),
     port: assertValidPort(optional('PORT', '8080')),

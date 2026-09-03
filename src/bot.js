@@ -29,6 +29,12 @@ const MAX_RAW_INPUT = 2000;
  */
 const ALBUM_SETTLE_MS = 2000;
 
+// Photos sent as a FILE arrive uncompressed and full-resolution. Cap the
+// download so an accidental huge file cannot exhaust memory.
+const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+
+const REFERENCE_KEY = 'size_reference';
+
 // The Fix button asks a question carrying the entry id. The user's reply to it
 // is routed as a correction instead of a new meal, so ids never need typing.
 const FIX_PROMPT = (id, label) => `Correcting #${id} — ${label}\n\nWhat should I change?`;
@@ -137,6 +143,39 @@ export function createBot({ config, queries, analyzer }) {
         token: config.exportToken,
       }),
     );
+  });
+
+  // Personal size references, used to judge portions from photos. Stored once
+  // and applied to every photo thereafter — the model's generic averages are a
+  // guess, your actual hand is a ruler.
+  bot.command('reference', async (ctx) => {
+    const argument = (ctx.match ?? '').trim();
+
+    if (!argument) {
+      const current = queries.getSetting(REFERENCE_KEY);
+      await ctx.reply(
+        current
+          ? `Your size references:\n${current}\n\nReplace with /reference <new text>, remove with /reference clear.`
+          : [
+              'No size references set. Photos fall back to generic averages.',
+              '',
+              'Measure a couple of things you often have in frame and tell me, e.g.',
+              '/reference my palm is 9cm across, my fist is 9cm tall, my dinner plate is 26cm',
+              '',
+              'Then put a hand next to the plate when you shoot and portions get far more accurate.',
+            ].join('\n'),
+      );
+      return;
+    }
+
+    if (/^(clear|none|off|remove)$/i.test(argument)) {
+      queries.setSetting(REFERENCE_KEY, null);
+      await ctx.reply('Size references cleared. Photos will use generic averages.');
+      return;
+    }
+
+    queries.setSetting(REFERENCE_KEY, argument.slice(0, 500));
+    await ctx.reply(`Saved. Photos will now use:\n${argument.slice(0, 500)}`);
   });
 
   bot.command('undo', async (ctx) => {
@@ -357,13 +396,14 @@ export function createBot({ config, queries, analyzer }) {
     try {
       const buffers = [];
       for (const photo of photoSets) {
-        // Smallest Telegram variant at or above 768px — least egress for the
-        // resolution we actually need.
-        const size = pickPhotoSize(photo);
+        // `photo` is either Telegram's list of pre-scaled variants, or a
+        // { file_id } from a full-resolution file upload.
+        const size = Array.isArray(photo) ? pickPhotoSize(photo, config.photoMaxEdge) : photo;
         buffers.push(await downloadTelegramFile(ctx, size.file_id, config.telegramBotToken));
       }
 
-      const result = await analyzer.analyzePhotos(buffers, caption);
+      const reference = queries.getSetting(REFERENCE_KEY);
+      const result = await analyzer.analyzePhotos(buffers, caption, reference);
       const fallbackLabel = buffers.length > 1 ? `(${buffers.length} photos)` : '(photo)';
       await logAndReply(ctx, result, caption ?? fallbackLabel);
     } catch (error) {
@@ -412,7 +452,25 @@ export function createBot({ config, queries, analyzer }) {
     }, ALBUM_SETTLE_MS);
   });
 
-  // Anything else (voice, video, stickers, documents) — no API call, just a nudge.
+  // A picture sent as a FILE keeps its full resolution — Telegram compresses
+  // anything sent as a photo down to about 1280px. This is the highest-detail
+  // path, and detail is what separates rice from mashed potato.
+  bot.on('message:document', async (ctx) => {
+    const document = ctx.message.document;
+    if (!document.mime_type?.startsWith('image/')) {
+      await ctx.reply('I can read text descriptions and photos of meals. Send me one of those.');
+      return;
+    }
+    if (document.file_size && document.file_size > MAX_DOCUMENT_BYTES) {
+      await ctx.reply('That image is too large. Send it as a photo instead.');
+      return;
+    }
+
+    await ctx.replyWithChatAction('typing').catch(() => {});
+    await handlePhotos(ctx, [{ file_id: document.file_id }], ctx.message.caption?.trim() || null);
+  });
+
+  // Anything else (voice, video, stickers) — no API call, just a nudge.
   bot.on('message', async (ctx) => {
     await ctx.reply('I can read text descriptions and photos of meals. Send me one of those.');
   });

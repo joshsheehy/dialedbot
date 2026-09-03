@@ -67,6 +67,14 @@ export function openDb(dbPath) {
       estimated  INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_food_log_chat_ts ON food_log (chat_id, ts);
+
+    -- Small key/value store for per-user settings, e.g. the size references
+    -- used to judge portions from photos. Separate table so food_log's shape
+    -- is untouched.
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
   `);
 
   return db;
@@ -118,7 +126,23 @@ export function createQueries(db) {
     WHERE id = @id
   `);
 
+  const readSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
+  const writeSetting = db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `);
+  const clearSetting = db.prepare('DELETE FROM settings WHERE key = ?');
+
   return {
+    getSetting(key) {
+      return readSetting.get(key)?.value ?? null;
+    },
+
+    setSetting(key, value) {
+      if (value == null) clearSetting.run(key);
+      else writeSetting.run(key, value);
+    },
+
     /** Persist one analysed meal. Returns the new row id. */
     addEntry({ chatId, ts, source, rawInput, result }) {
       const info = insert.run({

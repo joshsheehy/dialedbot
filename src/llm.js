@@ -6,10 +6,9 @@ import Anthropic from '@anthropic-ai/sdk';
  * one more. The DB-only paths (/today, /undo, the 21:00 summary) cost nothing.
  */
 
-export const MODEL = 'claude-haiku-4-5';
 const MAX_TOKENS = 2048;
 
-const SYSTEM_PROMPT = [
+const TEXT_SYSTEM_PROMPT = [
   'You are a nutrition estimator for a personal food log.',
   'Break the meal into individual food items and give calories and macros for each.',
   '',
@@ -33,6 +32,58 @@ const SYSTEM_PROMPT = [
   '',
   'No prose, no markdown, no code fences.',
 ].join(' ');
+
+/**
+ * Photos need their own system prompt. Identification is the hard part — the
+ * observed failures were rice read as mashed potato and kimchi as shredded
+ * carrot — so this leads with looking before naming, names the confusable
+ * pairs, and demands the uncertainty be surfaced rather than hidden.
+ */
+const PHOTO_SYSTEM_PROMPT = [
+  'You are a nutrition estimator for a personal food log, working from photographs.',
+  '',
+  'Work in this order:',
+  '1. Describe to yourself what you actually SEE — texture, grain, colour, sheen, how it',
+  '   was cut, what it is served in. Do not jump to a dish name.',
+  '2. Only then decide what each food is.',
+  '3. Judge portions using anything in frame that has a known size.',
+  '4. Return the JSON.',
+  '',
+  'Identification is the part that goes wrong. Look carefully before committing:',
+  '- Rice has visible separate grains; mashed potato is a smooth uniform mass; couscous',
+  '  is finer and more yellow; quinoa shows tiny rings; grits and polenta are smoother.',
+  '- Kimchi is irregular fermented cabbage leaf with red chilli coating, often glossy;',
+  '  shredded carrot is uniform orange sticks; sauerkraut is pale and un-spiced.',
+  '- Chicken, pork and turkey differ in fibre and colour; beef is darker and coarser.',
+  '- Sweet potato is deeper orange than potato; cheese sauce is not hollandaise.',
+  'If two foods are genuinely hard to tell apart, choose the more likely one AND say in',
+  '"assumptions" what you considered and why, e.g. "grains visible, read as white rice',
+  'rather than mashed potato".',
+  '',
+  'PORTION SIZE. Use any object in frame with a known size as a ruler:',
+  '- A hand: an adult palm is about 8-9cm across and 10cm long, a closed fist about 350ml,',
+  '  a thumb from knuckle to tip about 5cm.',
+  '- Cutlery: a dinner fork is about 19-20cm, a teaspoon about 14cm.',
+  '- Tableware: a dinner plate is about 27cm across, a side plate 20cm, a standard mug 350ml.',
+  '- A soda can is 12cm tall, a credit card 8.6cm wide, a phone about 15cm.',
+  'Say in "assumptions" which reference you used and the size you concluded, e.g.',
+  '"hand in frame, chicken breast about 1.5 palms, ~180g".',
+  'If nothing in frame gives scale, say so in "assumptions" — that is the single biggest',
+  'source of error, and the user can then add a reference object and retake it.',
+  '',
+  'Account for cooking fats, oils, sauces and dressings you can see.',
+  '',
+  'Respond with ONLY a single JSON object matching this shape, and nothing else:',
+  '{"items":[{"name":string,"grams":number|null,"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number}],',
+  '"kcal":number,"protein_g":number,"carbs_g":number,"fat_g":number,"estimated":boolean,"assumptions":string}',
+  '',
+  'The top-level kcal/protein_g/carbs_g/fat_g are the sums across items.',
+  'Always set "estimated" to true.',
+  '"assumptions" must cover: the scale reference used, portion sizes concluded, and any',
+  'identification you were unsure about. Up to 300 characters. Never empty or null.',
+  '',
+  'No prose, no markdown, no code fences.',
+].join('\n');
 
 // Mirrors SYSTEM_PROMPT so the API can enforce the shape server-side. If the
 // endpoint rejects output_config we fall back to prompt-only + defensive
@@ -151,18 +202,18 @@ function describeItems(items) {
     .join('; ');
 }
 
-export function createLlm(apiKey) {
+export function createLlm(apiKey, { textModel, photoModel }) {
   const client = new Anthropic({
     apiKey,
-    timeout: 60_000,
+    timeout: 90_000,
     maxRetries: 1,
   });
 
-  async function request(content) {
+  async function request(content, { model, system }) {
     const params = {
-      model: MODEL,
+      model,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
+      system,
       messages: [{ role: 'user', content }],
     };
 
@@ -202,12 +253,10 @@ export function createLlm(apiKey) {
      * to estimate from the description otherwise.
      */
     estimateFromText(description) {
-      return request([
-        {
-          type: 'text',
-          text: `Estimate the nutrition for this meal:\n\n${description}`,
-        },
-      ]);
+      return request(
+        [{ type: 'text', text: `Estimate the nutrition for this meal:\n\n${description}` }],
+        { model: textModel, system: TEXT_SYSTEM_PROMPT },
+      );
     },
 
     /**
@@ -215,26 +264,32 @@ export function createLlm(apiKey) {
      * Several photos mean several angles of ONE meal, so the prompt is explicit
      * that items visible in more than one frame must be counted once.
      */
-    estimateFromImages(jpegBuffers, caption) {
+    estimateFromImages(jpegBuffers, caption, reference) {
       const blocks = jpegBuffers.map((buffer) => ({
         type: 'image',
         source: { type: 'base64', media_type: 'image/jpeg', data: buffer.toString('base64') },
       }));
 
-      const instruction =
+      const parts = [
         jpegBuffers.length > 1
           ? `These ${jpegBuffers.length} photos are different angles of the SAME single meal. ` +
             'Identify the foods once across all of them — do NOT add up the same item twice ' +
-            'because it appears in more than one photo. Use the angles together to judge portions ' +
-            'more accurately, then return the macros for that one meal.'
-          : 'Identify the foods in this photo, estimate the portions, and return the macros.';
+            'because it appears in more than one photo. Use the angles together: a side-on ' +
+            'view shows depth that a top-down view hides, which matters for portion size.'
+          : 'Identify the foods in this photo, estimate the portions, and return the macros.',
+      ];
 
-      blocks.push({
-        type: 'text',
-        text: caption ? `${instruction} The user added: "${caption}"` : instruction,
-      });
+      // The user's own measurements beat the generic averages in the system
+      // prompt — their hand is a ruler of known length once it is calibrated.
+      if (reference) {
+        parts.push(`The user's own size references: ${reference}. Prefer these over generic averages.`);
+      }
 
-      return request(blocks);
+      if (caption) parts.push(`The user added: "${caption}"`);
+
+      blocks.push({ type: 'text', text: parts.join('\n\n') });
+
+      return request(blocks, { model: photoModel, system: PHOTO_SYSTEM_PROMPT });
     },
 
     /**
@@ -257,7 +312,7 @@ export function createLlm(apiKey) {
             'Apply the correction and return the full corrected meal, not just the changed part.',
           ].join('\n'),
         },
-      ]);
+      ], { model: textModel, system: TEXT_SYSTEM_PROMPT });
     },
   };
 }
